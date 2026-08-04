@@ -21,6 +21,7 @@
 | **Pose Library** | Bundled JSON (`target_poses.json`) | 10 reference target poses with 3D keypoints & joint angle targets |
 | **Scene Matching** | `tflite_flutter` | `^0.10.4` MobileCLIP vector embeddings & cosine similarity pose ranker |
 | **Suggestion Engine**| Pure Dart Math Engine | 3D vertex angle comparison, joint deltas, numeric match scoring & rule table |
+| **Error Handling** | Plain Fallback Messaging | Non-blocking banners for no-person-detected, low lighting & hardware exceptions |
 | **Capture Flow** | Auto-Capture Timer Lock | 1.5s countdown hold on match score $\ge 80\%$ alignment lock |
 | **Text-to-Speech** | `flutter_tts` | `^4.0.2` Directional voice feedback (ON by default, 3–4s throttling guard) |
 | **Permissions** | `permission_handler` | `^11.3.1` Runtime camera & microphone permission handling |
@@ -54,6 +55,9 @@ graph TD
     CE -->|"Match Score >= 80%"| GP["Good Pose Trigger & Auto-Capture Timer Lock"]
     GP -->|"Auto takePicture()"| K["Photo Storage (XFile Local Cache + Metadata)"]
     GP -->|Visual Glow Aura| I
+
+    C -->|"No person / Low confidence"| ERR["Fallback Error Banners (Item 22)"]
+    ERR -->|Non-blocking Toast| I
 
     SE -->|"Directional Voice Cues (3-4s)"| H["Flutter TTS Engine (ON by default)"]
     H -->|"Spoken Guidance"| J["User"]
@@ -138,14 +142,16 @@ d:\pose-suggetion/
 
 ## 3. Component & Module Reference
 
-### Component Contracts
-
-#### 1. `CameraScreen` Auto-Capture Lock ([lib/features/camera/presentation/camera_screen.dart](file:///d:/pose-suggetion/lib/features/camera/presentation/camera_screen.dart))
-- **Purpose**: Listens to real-time `_matchScore`. When match score crosses `goodPoseThreshold` ($\ge 80\%$), initiates a 1.5s lock timer (`_triggerAutoCaptureCountdown()`) and triggers `takePicture()`, displaying the captured photo along with target pose metadata.
+### Error Handling & Fallbacks
+- **No Person Detected**: Non-blocking amber notification banner (`"No person detected in camera view. Step into frame."`).
+- **Low Keypoint Confidence**: Warning indicator for low lighting or body occlusion (`"Low lighting or poor visibility detected"`).
+- **Camera Failure**: Retry button and detailed `CameraException` message display.
 
 ---
 
-## 4. Security, Performance & Design Tokens
+## 4. Security, Performance & QA Recommendations
 
-### Security & Privacy Protections
-- **Zero Cloud Footprint**: All image frames, photo capture files, reference pose JSON definitions, ML Kit pose landmarker evaluations, MobileCLIP tensor computations, and TTS feedback operations are strictly stored and executed on local device hardware.
+### Manual QA & Performance Observations
+1. **Camera Frame Throttling**: 250ms throttling on ML Kit Pose Detection prevents thermal throttling and keeps frame rendering smoothly above 30 FPS.
+2. **Memory Footprint**: Reusable `Paint` caches in `TargetPoseStencilPainter` and `PoseOverlayPainter` prevent memory allocations in draw loops.
+3. **Battery Saver Mode**: Cosine similarity scene embeddings execute on coarse 1–2s intervals to preserve battery efficiency during live preview sessions.

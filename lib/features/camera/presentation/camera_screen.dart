@@ -67,8 +67,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   String _suggestionText = 'Align your posture with the target stencil.';
   bool _isVoiceMuted = false;
   bool _isGoodPoseTriggered = false;
-  
-  // Phase 7 Auto-Capture Countdown Lock State (Item 21)
+  String? _fallbackWarningMessage; // Item 22 Fallback Warning Message
+
+  // Phase 7 Auto-Capture Countdown Lock State
   Timer? _autoCaptureTimer;
   int _autoCaptureSeconds = 2;
   bool _hasAutoCapturedForCurrentPose = false;
@@ -203,11 +204,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       }
     } on CameraException catch (e) {
       setState(() {
-        _cameraError = 'Camera Exception: ${e.description ?? e.code}';
+        _cameraError = 'Camera Hardware Error: ${e.description ?? e.code}';
       });
     } catch (e) {
       setState(() {
-        _cameraError = 'Failed to load camera devices: $e';
+        _cameraError = 'Failed to load camera hardware: $e';
       });
     } finally {
       if (mounted) {
@@ -236,7 +237,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     } on CameraException catch (e) {
       if (mounted) {
         setState(() {
-          _cameraError = 'Failed to initialize camera: ${e.description ?? e.code}';
+          _cameraError = 'Failed to start camera hardware: ${e.description ?? e.code}';
         });
       }
     }
@@ -266,10 +267,27 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         double score = 0.0;
         String suggestion = 'Align your posture with the target stencil.';
         bool isGoodPose = false;
+        String? warning;
 
-        if (poses.isNotEmpty && widget.selectedTargetPose != null) {
+        // Phase 8 Error Handling: Handle No-Person-Detected & Low Lighting / Keypoint Confidence
+        if (poses.isEmpty) {
+          suggestion = 'No person detected in camera view. Step into frame.';
+          warning = 'No person detected';
+          _cancelAutoCaptureTimer();
+        } else if (widget.selectedTargetPose != null) {
+          final livePose = poses.first;
+          
+          // Check average landmark likelihood (lighting / occlusion check)
+          final landmarks = livePose.landmarks.values;
+          if (landmarks.isNotEmpty) {
+            final avgLikelihood = landmarks.fold<double>(0.0, (sum, l) => sum + l.likelihood) / landmarks.length;
+            if (avgLikelihood < 0.6) {
+              warning = 'Low lighting or poor visibility detected';
+            }
+          }
+
           final deltas = _comparisonEngine.comparePoses(
-            livePose: poses.first,
+            livePose: livePose,
             targetPose: widget.selectedTargetPose!,
           );
           score = _comparisonEngine.calculateMatchScore(deltas);
@@ -285,8 +303,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           }
 
           _ttsService.speakSuggestion(suggestion);
-        } else {
-          _cancelAutoCaptureTimer();
         }
 
         if (mounted) {
@@ -295,11 +311,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             _matchScore = score;
             _suggestionText = suggestion;
             _isGoodPoseTriggered = isGoodPose;
+            _fallbackWarningMessage = warning;
           });
         }
       }
     } catch (e) {
-      // Silently handle frame processing anomalies during stream transition
+      // Handle processing anomalies
     } finally {
       _isStreamDetecting = false;
     }
@@ -450,7 +467,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Auto-Captured Photo Saved!',
+                      'Photo Captured!',
                       style: TextStyle(
                         color: AppTheme.textPrimary,
                         fontWeight: FontWeight.bold,
@@ -659,7 +676,38 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                     ),
 
-                  // Phase 7 Auto-Capture Countdown Lock Badge Overlay (Item 21)
+                  // Phase 8 Fallback Warning Message Banner (Item 22)
+                  if (_fallbackWarningMessage != null && _autoCaptureTimer == null)
+                    Positioned(
+                      bottom: 16,
+                      left: 16,
+                      right: 16,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppTheme.warningAmber.withOpacity(0.9),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.warning_amber_rounded, color: Colors.black, size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _fallbackWarningMessage!,
+                                style: const TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Auto-Capture Countdown Lock Badge Overlay
                   if (_autoCaptureTimer != null)
                     Center(
                       child: Container(
@@ -809,7 +857,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 tooltip: 'Select Target Pose',
               ),
 
-              // Shutter Button with Auto-Capture Indicator
+              // Shutter Button
               GestureDetector(
                 onTap: _isCapturing ? null : _takePicture,
                 child: AnimatedContainer(
