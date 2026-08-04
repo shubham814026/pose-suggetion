@@ -3,6 +3,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
+import '../../../../core/services/preferences_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../pose_detection/presentation/widgets/pose_overlay_painter.dart';
 import '../../pose_detection/services/pose_detector_service.dart';
@@ -10,6 +11,9 @@ import '../../pose_detection/utils/camera_image_converter.dart';
 import '../../pose_library/models/target_pose.dart';
 import '../../pose_library/presentation/pose_library_screen.dart';
 import '../../pose_library/presentation/widgets/target_pose_stencil_painter.dart';
+import '../../suggestion_engine/services/directional_suggestion_engine.dart';
+import '../../suggestion_engine/services/pose_comparison_engine.dart';
+import '../../suggestion_engine/services/tts_suggestion_service.dart';
 import 'widgets/permission_denied_view.dart';
 
 class CameraScreen extends StatefulWidget {
@@ -52,11 +56,58 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   static const Duration _throttleDuration = Duration(milliseconds: 250);
   List<Pose> _livePoses = [];
 
+  // Suggestion Engine & Good Pose Trigger Integration
+  final PoseComparisonEngine _comparisonEngine = PoseComparisonEngine();
+  final DirectionalSuggestionEngine _directionalEngine = DirectionalSuggestionEngine();
+  final TtsSuggestionService _ttsService = TtsSuggestionService();
+  final PreferencesService _preferencesService = PreferencesService();
+
+  double _matchScore = 0.0;
+  String _suggestionText = 'Align your posture with the target stencil.';
+  bool _isVoiceMuted = false;
+  bool _isGoodPoseTriggered = false;
+  
+  // Persisted Stencil Color Toggle (Item 20)
+  Color _stencilColor = AppTheme.primaryCyan;
+  final List<Color> _stencilColorOptions = const [
+    AppTheme.primaryCyan,
+    Colors.white,
+    Colors.black87,
+    AppTheme.accentViolet,
+  ];
+  int _stencilColorIndex = 0;
+
+  static const double goodPoseThreshold = 80.0;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadPreferences();
     _checkPermissionAndInit();
+  }
+
+  Future<void> _loadPreferences() async {
+    final color = await _preferencesService.getStencilColor();
+    final voiceEnabled = await _preferencesService.getVoiceEnabled();
+    await _ttsService.initialize(voiceOnByDefault: voiceEnabled);
+
+    if (mounted) {
+      setState(() {
+        _stencilColor = color;
+        _isVoiceMuted = !_ttsService.isMuted ? false : !voiceEnabled;
+      });
+    }
+  }
+
+  Future<void> _cycleStencilColor() async {
+    final nextIndex = (_stencilColorIndex + 1) % _stencilColorOptions.length;
+    final newColor = _stencilColorOptions[nextIndex];
+    setState(() {
+      _stencilColorIndex = nextIndex;
+      _stencilColor = newColor;
+    });
+    await _preferencesService.saveStencilColor(newColor);
   }
 
   @override
@@ -64,6 +115,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _disposeCameraController();
     _streamPoseDetector.close();
+    _ttsService.stop();
     super.dispose();
   }
 
@@ -76,6 +128,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
       _disposeCameraController();
+      _ttsService.stop();
     } else if (state == AppLifecycleState.resumed) {
       _checkPermissionAndInit();
     }
@@ -201,9 +254,34 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
       if (inputImage != null) {
         final poses = await _streamPoseDetector.processInputImage(inputImage);
+        
+        double score = 0.0;
+        String suggestion = 'Align your posture with the target stencil.';
+        bool isGoodPose = false;
+
+        if (poses.isNotEmpty && widget.selectedTargetPose != null) {
+          final deltas = _comparisonEngine.comparePoses(
+            livePose: poses.first,
+            targetPose: widget.selectedTargetPose!,
+          );
+          score = _comparisonEngine.calculateMatchScore(deltas);
+          final suggestionsList = _directionalEngine.generateSuggestions(deltas);
+          suggestion = suggestionsList.first;
+
+          isGoodPose = score >= goodPoseThreshold;
+          if (isGoodPose) {
+            suggestion = 'Great pose! Perfect alignment!';
+          }
+
+          _ttsService.speakSuggestion(suggestion);
+        }
+
         if (mounted) {
           setState(() {
             _livePoses = poses;
+            _matchScore = score;
+            _suggestionText = suggestion;
+            _isGoodPoseTriggered = isGoodPose;
           });
         }
       }
@@ -233,6 +311,15 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         });
       }
     }
+  }
+
+  Future<void> _toggleVoiceMute() async {
+    final newMuteState = !_isVoiceMuted;
+    setState(() {
+      _isVoiceMuted = newMuteState;
+      _ttsService.setMuted(newMuteState);
+    });
+    await _preferencesService.saveVoiceEnabled(!newMuteState);
   }
 
   void _openPosePickerModal() {
@@ -310,12 +397,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                     ),
                     Text(
-                      widget.selectedTargetPose != null
-                          ? 'Matched against "${widget.selectedTargetPose!.name}"'
-                          : 'Saved locally to app cache.',
-                      style: const TextStyle(
-                        color: AppTheme.textSecondary,
+                      'Alignment Match Score: ${_matchScore.toInt()}%',
+                      style: TextStyle(
+                        color: _isGoodPoseTriggered ? AppTheme.successGreen : AppTheme.primaryCyan,
                         fontSize: 12,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
@@ -352,6 +438,20 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       appBar: AppBar(
         title: const Text('Pose Assistant'),
         actions: [
+          // Stencil Color Toggle Button (Item 20)
+          IconButton(
+            icon: Icon(Icons.palette_outlined, color: _stencilColor),
+            onPressed: _cycleStencilColor,
+            tooltip: 'Cycle Stencil Color',
+          ),
+          IconButton(
+            icon: Icon(
+              _isVoiceMuted ? Icons.volume_off : Icons.volume_up,
+              color: _isVoiceMuted ? AppTheme.warningAmber : AppTheme.primaryCyan,
+            ),
+            onPressed: _toggleVoiceMute,
+            tooltip: _isVoiceMuted ? 'Unmute Voice Guidance' : 'Mute Voice Guidance',
+          ),
           if (_permissionStatus.isGranted && _cameraController != null && _cameraController!.value.isInitialized) ...[
             IconButton(
               icon: Icon(
@@ -432,27 +532,33 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     final currentCamera = _availableCameras[_selectedCameraIndex];
     final isFrontFacing = currentCamera.lensDirection == CameraLensDirection.front;
-    final detectedLandmarksCount = _livePoses.isNotEmpty ? _livePoses.first.landmarks.length : 0;
     final previewSize = _cameraController!.value.previewSize;
     final activePose = widget.selectedTargetPose;
 
+    final scoreInt = _matchScore.toInt();
+    final scoreColor = _isGoodPoseTriggered
+        ? AppTheme.successGreen
+        : scoreInt >= 60
+            ? AppTheme.primaryCyan
+            : AppTheme.warningAmber;
+
     return Column(
       children: [
-        // Live Camera Preview Viewport with CustomPainter Overlay Stack
         Expanded(
-          child: Container(
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
             margin: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               color: Colors.black,
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
-                color: detectedLandmarksCount > 0 ? AppTheme.successGreen : AppTheme.primaryCyan.withOpacity(0.5),
-                width: 1.5,
+                color: scoreColor,
+                width: _isGoodPoseTriggered ? 3.5 : 1.8,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.4),
-                  blurRadius: 16,
+                  color: _isGoodPoseTriggered ? AppTheme.successGreen.withOpacity(0.5) : Colors.black.withOpacity(0.4),
+                  blurRadius: _isGoodPoseTriggered ? 24 : 16,
                   offset: const Offset(0, 6),
                 ),
               ],
@@ -467,19 +573,21 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     child: CameraPreview(_cameraController!),
                   ),
 
-                  // Target Pose Silhouette Stencil Overlay (Item 10)
+                  // Target Pose Silhouette Stencil Overlay (With Persisted Stencil Color)
                   if (activePose != null)
                     Positioned.fill(
                       child: CustomPaint(
                         painter: TargetPoseStencilPainter(
                           targetPose: activePose,
-                          stencilColor: AppTheme.primaryCyan.withOpacity(0.55),
+                          stencilColor: _isGoodPoseTriggered
+                              ? AppTheme.successGreen.withOpacity(0.8)
+                              : _stencilColor.withOpacity(0.65),
                           lensDirection: currentCamera.lensDirection,
                         ),
                       ),
                     ),
 
-                  // Real-time Live User Skeleton Overlay (Item 7)
+                  // Real-time Live User Skeleton Overlay
                   if (_livePoses.isNotEmpty && previewSize != null)
                     Positioned.fill(
                       child: CustomPaint(
@@ -491,117 +599,80 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                     ),
 
-                  // Lens Direction Indicator Badge
+                  // TOP HUD BANNER
                   Positioned(
                     top: 12,
                     left: 12,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.primaryCyan.withOpacity(0.5)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isFrontFacing ? Icons.person_pin : Icons.photo_camera,
-                            size: 14,
-                            color: AppTheme.primaryCyan,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            isFrontFacing ? 'Front Camera' : 'Rear Camera',
-                            style: const TextStyle(
-                              color: AppTheme.textPrimary,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Selected Target Pose Active Badge Bar
-                  if (activePose != null)
-                    Positioned(
-                      bottom: 12,
-                      left: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.black80,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppTheme.primaryCyan, width: 1),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.collections_bookmark, color: AppTheme.primaryCyan, size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Target Stencil: ${activePose.name}',
-                                style: const TextStyle(
-                                  color: AppTheme.textPrimary,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            TextButton(
-                              onPressed: _openPosePickerModal,
-                              style: TextButton.styleFrom(
-                                padding: EdgeInsets.zero,
-                                minimumSize: Size.zero,
-                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              ),
-                              child: const Text(
-                                'Change',
-                                style: TextStyle(color: AppTheme.primaryCyan, fontSize: 12),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  // Real-Time Stream Pose Detection Live Status Badge
-                  Positioned(
-                    top: 12,
                     right: 12,
                     child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      duration: const Duration(milliseconds: 250),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       decoration: BoxDecoration(
-                        color: Colors.black80,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: detectedLandmarksCount > 0 ? AppTheme.successGreen : AppTheme.warningAmber,
-                          width: 1,
-                        ),
+                        color: Colors.black.withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: scoreColor.withOpacity(0.8), width: _isGoodPoseTriggered ? 2 : 1),
                       ),
                       child: Row(
-                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            detectedLandmarksCount > 0 ? Icons.accessibility_new : Icons.person_search_outlined,
-                            size: 14,
-                            color: detectedLandmarksCount > 0 ? AppTheme.successGreen : AppTheme.warningAmber,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            detectedLandmarksCount > 0
-                                ? 'Skeleton Active ($detectedLandmarksCount/33)'
-                                : 'Searching Person...',
-                            style: TextStyle(
-                              color: detectedLandmarksCount > 0 ? AppTheme.successGreen : AppTheme.warningAmber,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: scoreColor.withOpacity(0.2),
+                              shape: BoxShape.circle,
+                              border: Border.all(color: scoreColor, width: 1.5),
                             ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_isGoodPoseTriggered) ...[
+                                  const Icon(Icons.check, color: AppTheme.successGreen, size: 14),
+                                  const SizedBox(width: 2),
+                                ],
+                                Text(
+                                  '$scoreInt%',
+                                  style: TextStyle(
+                                    color: scoreColor,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  _suggestionText,
+                                  style: TextStyle(
+                                    color: _isGoodPoseTriggered ? AppTheme.successGreen : AppTheme.textPrimary,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  activePose != null ? 'Target: ${activePose.name}' : 'Select a target pose',
+                                  style: const TextStyle(
+                                    color: AppTheme.textSecondary,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              _isVoiceMuted ? Icons.volume_off : Icons.volume_up,
+                              size: 20,
+                              color: _isVoiceMuted ? AppTheme.textSecondary : AppTheme.primaryCyan,
+                            ),
+                            onPressed: _toggleVoiceMute,
                           ),
                         ],
                       ),
@@ -638,12 +709,25 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               // Shutter Button
               GestureDetector(
                 onTap: _isCapturing ? null : _takePicture,
-                child: Container(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
                   width: 76,
                   height: 76,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 4),
+                    border: Border.all(
+                      color: _isGoodPoseTriggered ? AppTheme.successGreen : Colors.white,
+                      width: 4,
+                    ),
+                    boxShadow: _isGoodPoseTriggered
+                        ? [
+                            BoxShadow(
+                              color: AppTheme.successGreen.withOpacity(0.6),
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            ),
+                          ]
+                        : [],
                   ),
                   child: Center(
                     child: AnimatedContainer(
@@ -652,7 +736,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       height: _isCapturing ? 48 : 62,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: _isCapturing ? AppTheme.accentViolet : AppTheme.primaryCyan,
+                        color: _isCapturing
+                            ? AppTheme.accentViolet
+                            : _isGoodPoseTriggered
+                                ? AppTheme.successGreen
+                                : AppTheme.primaryCyan,
                       ),
                       child: _isCapturing
                           ? const Center(
