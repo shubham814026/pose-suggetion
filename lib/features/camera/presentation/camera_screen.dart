@@ -39,6 +39,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   List<CameraDescription> _availableCameras = [];
   CameraController? _cameraController;
   int _selectedCameraIndex = 0;
+  bool get canToggleLens => _availableCameras.length > 1;
   bool _isCameraInitializing = false;
   String? _cameraError;
 
@@ -608,7 +609,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
 
     final currentCamera = _availableCameras[_selectedCameraIndex];
-    final isFrontFacing = currentCamera.lensDirection == CameraLensDirection.front;
     final previewSize = _cameraController!.value.previewSize;
     final activePose = widget.selectedTargetPose;
 
@@ -643,7 +643,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             child: ClipRRect(
               borderRadius: BorderRadius.circular(22),
               child: Stack(
-                fit: StackViewConstraints.expand,
+                fit: StackFit.expand,
                 children: [
                   // Camera Preview
                   Center(

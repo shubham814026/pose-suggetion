@@ -21,7 +21,6 @@ class AppTheme {
         primary: primaryCyan,
         secondary: accentViolet,
         surface: surfaceColor,
-        background: darkBackground,
         error: Colors.redAccent,
       ),
       appBarTheme: const AppBarTheme(
@@ -42,7 +41,7 @@ class AppTheme {
         type: BottomNavigationBarType.fixed,
         elevation: 8,
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: surfaceColor,
         elevation: 4,
         shape: RoundedRectangleBorder(

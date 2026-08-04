@@ -170,8 +170,12 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
                                   ]
                                 : [],
                           ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.all(12),
+                          child: Material(
+                            color: Colors.transparent,
+                            borderRadius: BorderRadius.circular(16),
+                            child: ListTile(
+                              isThreeLine: true,
+                              contentPadding: const EdgeInsets.all(12),
                             leading: Container(
                               width: 48,
                               height: 48,
@@ -281,7 +285,8 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
                               }
                             },
                           ),
-                        );
+                        ),
+                      );
                       },
                     ),
                   ),

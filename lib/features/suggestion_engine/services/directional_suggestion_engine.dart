@@ -22,17 +22,17 @@ class DirectionalSuggestionEngine {
       switch (joint) {
         case 'left_elbow':
           if (diff > minorThresholdDegrees) {
-            suggestions.add(diff > majorThresholdDegrees ? 'Straighten left arm' : 'Slightly straighten left arm');
+            suggestions.add(diff > majorThresholdDegrees ? 'Bend left elbow more' : 'Slightly bend left elbow');
           } else if (diff < -minorThresholdDegrees) {
-            suggestions.add(diff < -majorThresholdDegrees ? 'Bend left elbow more' : 'Slightly bend left elbow');
+            suggestions.add(diff < -majorThresholdDegrees ? 'Straighten left arm' : 'Slightly straighten left arm');
           }
           break;
 
         case 'right_elbow':
           if (diff > minorThresholdDegrees) {
-            suggestions.add(diff > majorThresholdDegrees ? 'Straighten right arm' : 'Slightly straighten right arm');
+            suggestions.add(diff > majorThresholdDegrees ? 'Bend right elbow more' : 'Slightly bend right elbow');
           } else if (diff < -minorThresholdDegrees) {
-            suggestions.add(diff < -majorThresholdDegrees ? 'Bend right elbow more' : 'Slightly bend right elbow');
+            suggestions.add(diff < -majorThresholdDegrees ? 'Straighten right arm' : 'Slightly straighten right arm');
           }
           break;
 
@@ -54,17 +54,17 @@ class DirectionalSuggestionEngine {
 
         case 'left_knee':
           if (diff > minorThresholdDegrees) {
-            suggestions.add('Straighten left leg');
-          } else if (diff < -minorThresholdDegrees) {
             suggestions.add('Bend left knee slightly');
+          } else if (diff < -minorThresholdDegrees) {
+            suggestions.add('Straighten left leg');
           }
           break;
 
         case 'right_knee':
           if (diff > minorThresholdDegrees) {
-            suggestions.add('Straighten right leg');
-          } else if (diff < -minorThresholdDegrees) {
             suggestions.add('Bend right knee slightly');
+          } else if (diff < -minorThresholdDegrees) {
+            suggestions.add('Straighten right leg');
           }
           break;
 

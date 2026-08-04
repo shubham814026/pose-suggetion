@@ -67,7 +67,10 @@ class PoseRecommendationService {
     }
 
     if (normA == 0.0 || normB == 0.0) return 0.0;
-    final similarity = dotProduct / (sqrt(normA) * sqrt(normB));
+    final denominator = sqrt(normA) * sqrt(normB);
+    if (denominator == 0.0) return 0.0;
+    final similarity = dotProduct / denominator;
+    if (similarity.isNaN) return 0.0;
     // Clamp result between 0.0 and 1.0 for normalized score representation
     return similarity.clamp(0.0, 1.0);
   }

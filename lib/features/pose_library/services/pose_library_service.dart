@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import '../models/target_pose.dart';
 
@@ -22,7 +23,7 @@ class PoseLibraryService {
       _isLoaded = true;
       return _cachedPoses;
     } catch (e) {
-      // Fallback empty list if asset fails
+      debugPrint('Failed to load target poses asset: $e');
       return [];
     }
   }

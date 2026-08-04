@@ -1,8 +1,33 @@
-# AI Pose Suggestion App — Technical Documentation
+# AI Pose Suggestion App — Technical Documentation Index
 
-## 1. Project Overview & System Architecture
+Welcome to the technical documentation for the **AI Pose Suggestion App**. This documentation repository contains comprehensive architecture diagrams, multi-phase evolution guides, setup/review instructions, and component API specifications.
 
-### Overview
+---
+
+## 📚 Multi-File Documentation Directory (`docs/`)
+
+The documentation is organized into focused reference guides within the [`docs/`](file:///d:/pose-suggetion/docs) folder:
+
+### 1. 🚀 [Setup, Installation & Review Guide](file:///d:/pose-suggetion/docs/SETUP_AND_RUN.md)
+* **Path**: [`docs/SETUP_AND_RUN.md`](file:///d:/pose-suggetion/docs/SETUP_AND_RUN.md)
+* **Contents**: Environment prerequisites, Flutter dependencies, Android & iOS permission setup, running instructions (`flutter run`), physical device testing, and step-by-step evaluation walkthrough.
+
+### 2. 📋 [Phase-by-Phase MVP Implementation Guide](file:///d:/pose-suggetion/docs/PHASES_OVERVIEW.md)
+* **Path**: [`docs/PHASES_OVERVIEW.md`](file:///d:/pose-suggetion/docs/PHASES_OVERVIEW.md)
+* **Contents**: Detailed architectural breakdown of all 9 phases (Phase 0 through Phase 9), key feature implementations, file additions, and verified done conditions.
+
+### 3. 🏗️ [System Architecture & Technical Specifications](file:///d:/pose-suggetion/docs/SYSTEM_ARCHITECTURE.md)
+* **Path**: [`docs/SYSTEM_ARCHITECTURE.md`](file:///d:/pose-suggetion/docs/SYSTEM_ARCHITECTURE.md)
+* **Contents**: System architecture diagrams, data flow pipelines, 3D vertex angle formulas, MobileCLIP cosine similarity matching equations, coordinate transformations, and front-camera horizontal mirroring logic.
+
+### 4. 🧩 [API & Module Reference](file:///d:/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
+* **Path**: [`docs/API_AND_MODULES_REFERENCE.md`](file:///d:/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
+* **Contents**: Complete API contracts and module specifications for all services (`PoseComparisonEngine`, `DirectionalSuggestionEngine`, `TtsSuggestionService`, `PoseRecommendationService`, `PreferencesService`), models, custom painters (`TargetPoseStencilPainter`), and converters.
+
+---
+
+## 1. Quick Project Summary
+
 **AI Pose Suggestion App** is an on-device, real-time AI photography assistant built with Flutter. Designed specifically for selfies and photography assistance, the application captures camera frames locally, detects human body keypoints using Google ML Kit Pose Detection, ranks target reference poses using MobileCLIP (quantized TFLite embeddings), and delivers real-time positioning feedback via visual overlays and voice guidance (`flutter_tts`).
 
 ### Core Design Principles
@@ -10,7 +35,7 @@
 - **Privacy-First**: No camera stream or image data leaves the device.
 - **Low-Latency Feedback**: Throttled detection cycles (200-300ms pose detection, 1-2s scene embeddings, 3-4s voice cues).
 
-### Tech Stack
+### Tech Stack Overview
 
 | Domain | Technology / Package | Version / Description |
 | :--- | :--- | :--- |
@@ -26,9 +51,10 @@
 | **Text-to-Speech** | `flutter_tts` | `^4.0.2` Directional voice feedback (ON by default, 3–4s throttling guard) |
 | **Permissions** | `permission_handler` | `^11.3.1` Runtime camera & microphone permission handling |
 | **Persistence** | `shared_preferences` | `^2.2.3` User preference storage (`PreferencesService` for stencil color & voice toggle) |
-| **State Management**| `StatefulWidget` / `provider` | Lightweight local state management |
 
-### System Architecture & Data Flow
+---
+
+## 2. High-Level Data Flow Diagram
 
 ```mermaid
 graph TD
@@ -56,102 +82,6 @@ graph TD
     GP -->|"Auto takePicture()"| K["Photo Storage (XFile Local Cache + Metadata)"]
     GP -->|Visual Glow Aura| I
 
-    C -->|"No person / Low confidence"| ERR["Fallback Error Banners (Item 22)"]
-    ERR -->|Non-blocking Toast| I
-
     SE -->|"Directional Voice Cues (3-4s)"| H["Flutter TTS Engine (ON by default)"]
     H -->|"Spoken Guidance"| J["User"]
 ```
-
-### Folder Architecture
-
-```
-d:\pose-suggetion/
-├── android/
-│   └── app/src/main/AndroidManifest.xml # Android CAMERA permission & hardware config
-├── assets/
-│   ├── models/             # MobileCLIP TFLite models (.tflite)
-│   └── poses/
-│       ├── target_poses.json            # Seed JSON database of 10 reference target poses
-│       └── target_pose_embeddings.json # Precomputed MobileCLIP feature vector embeddings
-├── ios/
-│   └── Runner/Info.plist   # iOS NSCameraUsageDescription privacy disclosure
-├── lib/
-│   ├── core/
-│   │   ├── services/
-│   │   │   └── preferences_service.dart # SharedPreferences wrapper for stencil color & voice toggle
-│   │   └── theme/
-│   │       └── app_theme.dart          # Sleek dark design system & color tokens
-│   ├── features/
-│   │   ├── camera/
-│   │   │   └── presentation/
-│   │   │       ├── camera_screen.dart   # Camera preview, live stream throttler, HUD banner, auto-capture lock & shutter handler
-│   │   │       └── widgets/
-│   │   │           └── permission_denied_view.dart # Permission request & settings fallback
-│   │   ├── pose_detection/
-│   │   │   ├── presentation/
-│   │   │   │   └── widgets/
-│   │   │   │       └── pose_overlay_painter.dart # CustomPainter rendering live skeleton lines & joint dots
-│   │   │   ├── services/
-│   │   │   │   └── pose_detector_service.dart # ML Kit PoseDetector wrapper (stream/single modes)
-│   │   │   └── utils/
-│   │   │       └── camera_image_converter.dart # CameraImage to InputImage format converter
-│   │   ├── pose_library/
-│   │   │   ├── models/
-│   │   │   │   └── target_pose.dart     # TargetPose & PoseKeypointData data models
-│   │   │   ├── presentation/
-│   │   │   │   ├── pose_library_screen.dart # Reference pose gallery & picker ListView
-│   │   │   │   └── widgets/
-│   │   │   │       └── target_pose_stencil_painter.dart # Target pose stencil outline CustomPainter
-│   │   │   └── services/
-│   │   │       └── pose_library_service.dart # Target pose JSON asset loader
-│   │   ├── pose_recommendation/
-│   │   │   └── services/
-│   │   │       └── pose_recommendation_service.dart # Cosine similarity ranking engine
-│   │   ├── suggestion_engine/
-│   │   │   ├── models/
-│   │   │   │   └── joint_delta.dart     # JointDelta model
-│   │   │   └── services/
-│   │   │       ├── pose_comparison_engine.dart # Pure Dart 3D vertex angle & match score engine
-│   │   │       ├── directional_suggestion_engine.dart # Threshold rule table directional advisor
-│   │   │       └── tts_suggestion_service.dart # FlutterTTS service (ON by default, 3-4s speech throttling)
-│   │   └── settings/
-│   │       └── presentation/
-│   │           └── settings_screen.dart # Voice toggle, overlay preferences & privacy status
-│   ├── navigation/
-│   │   └── app_navigation_shell.dart   # Bottom navigation bar & active target pose state coordinator
-│   └── main.dart                       # App entrypoint & MaterialApp initialization
-├── test/
-│   ├── pose_comparison_engine_test.dart       # Unit tests for 3D angle math, joint deltas & match score
-│   └── directional_suggestion_engine_test.dart # Unit tests for rule table text generation
-├── analysis_options.yaml
-├── DOCUMENTATION.md
-└── pubspec.yaml
-```
-
----
-
-## 2. Setup, Installation & Environment
-
-### Prerequisites
-- **Flutter SDK**: `>= 3.0.0`
-- **Dart SDK**: `>= 3.0.0`
-- **Android Studio / Xcode**: Platform SDKs for Android (API 21+) and iOS (iOS 12.0+).
-
----
-
-## 3. Component & Module Reference
-
-### Error Handling & Fallbacks
-- **No Person Detected**: Non-blocking amber notification banner (`"No person detected in camera view. Step into frame."`).
-- **Low Keypoint Confidence**: Warning indicator for low lighting or body occlusion (`"Low lighting or poor visibility detected"`).
-- **Camera Failure**: Retry button and detailed `CameraException` message display.
-
----
-
-## 4. Security, Performance & QA Recommendations
-
-### Manual QA & Performance Observations
-1. **Camera Frame Throttling**: 250ms throttling on ML Kit Pose Detection prevents thermal throttling and keeps frame rendering smoothly above 30 FPS.
-2. **Memory Footprint**: Reusable `Paint` caches in `TargetPoseStencilPainter` and `PoseOverlayPainter` prevent memory allocations in draw loops.
-3. **Battery Saver Mode**: Cosine similarity scene embeddings execute on coarse 1–2s intervals to preserve battery efficiency during live preview sessions.

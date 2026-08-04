@@ -8,7 +8,7 @@ class TargetPoseStencilPainter extends CustomPainter {
   final Color stencilColor;
   final CameraLensDirection lensDirection;
 
-  static final Map<String, Paint> _paintCache = {};
+  final Map<String, Paint> _paintCache = {};
 
   TargetPoseStencilPainter({
     required this.targetPose,

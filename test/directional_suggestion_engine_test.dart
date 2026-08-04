@@ -21,13 +21,13 @@ void main() {
       expect(suggestions.first, contains('Great pose'));
     });
 
-    test('generateSuggestions returns "Bend left elbow more" when delta is negative', () {
+    test('generateSuggestions returns "Bend left elbow more" when live angle is greater than target angle', () {
       final deltas = [
         const JointDelta(
           jointName: 'left_elbow',
           liveAngleDegrees: 140.0,
           targetAngleDegrees: 90.0,
-          deltaDegrees: -25.0,
+          deltaDegrees: 50.0,
           isWithinTolerance: false,
         ),
       ];
@@ -36,13 +36,13 @@ void main() {
       expect(suggestions.first, equals('Bend left elbow more'));
     });
 
-    test('generateSuggestions returns "Straighten left arm" when delta is positive', () {
+    test('generateSuggestions returns "Straighten left arm" when live angle is less than target angle', () {
       final deltas = [
         const JointDelta(
           jointName: 'left_elbow',
           liveAngleDegrees: 60.0,
           targetAngleDegrees: 120.0,
-          deltaDegrees: 35.0,
+          deltaDegrees: -60.0,
           isWithinTolerance: false,
         ),
       ];

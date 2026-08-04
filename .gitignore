@@ -48,5 +48,26 @@ ios/Flutter/app.flx
 ios/Flutter/app.zip
 ios/Flutter/flutter_assets/
 
+# Local machine properties
+local.properties
+android/local.properties
+android/app/local.properties
+
+# Gradle & Kotlin build caches
+android/.gradle/
+android/.kotlin/
+
+# Generated Flutter files & binaries
+.flutter-plugins
+.flutter-plugins-dependencies
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# CocoaPods & iOS build artifacts
+ios/Pods/
+ios/.symlinks/
+
 # extra 
 .agents

@@ -33,12 +33,15 @@ InputImage? convertCameraImageToInputImage(
   if (image.planes.length == 1) {
     bytes = image.planes[0].bytes;
   } else {
-    // Concatenate bytes from all YUV planes
-    final WriteBuffer allBytes = WriteBuffer();
+    // Direct memory copy across YUV planes avoiding WriteBuffer GC overhead
+    final int totalBytes = image.planes.fold<int>(0, (sum, p) => sum + p.bytes.length);
+    final Uint8List concatenated = Uint8List(totalBytes);
+    int offset = 0;
     for (final Plane plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
+      concatenated.setRange(offset, offset + plane.bytes.length, plane.bytes);
+      offset += plane.bytes.length;
     }
-    bytes = allBytes.done().buffer.asUint8List();
+    bytes = concatenated;
   }
 
   final metadata = InputImageMetadata(

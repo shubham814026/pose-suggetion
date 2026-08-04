@@ -114,8 +114,9 @@ class PoseOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PoseOverlayPainter oldDelegate) {
-    return oldDelegate.poses != poses ||
+    return oldDelegate.poses.length != poses.length ||
         oldDelegate.imageSize != imageSize ||
-        oldDelegate.lensDirection != lensDirection;
+        oldDelegate.lensDirection != lensDirection ||
+        (poses.isNotEmpty && oldDelegate.poses.isNotEmpty && oldDelegate.poses.first != poses.first);
   }
 }

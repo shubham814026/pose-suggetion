@@ -1,10 +1,11 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.pose_suggetion">
     <uses-permission android:name="android.permission.CAMERA"/>
 
     <application
         android:label="Pose Suggestion"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@android:drawable/sym_def_app_icon">
         <activity
             android:name=".MainActivity"
             android:exported="true"
