@@ -1,0 +1,52 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrated
+
+# IntelliJ-based IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+
+# Flutter/Dart specific
+.dart_tool/
+.ft_ba/
+.metadata
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Android specific
+android/app/debug
+android/app/profile
+android/app/release
+android/app/src/main/assets/
+android/app/src/main/jniLibs/
+android/app/src/main/obj/
+
+# iOS specific
+ios/Runner/GeneratedPluginRegistrant.h
+ios/Runner/GeneratedPluginRegistrant.m
+ios/Flutter/App.framework
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/app.flx
+ios/Flutter/app.zip
+ios/Flutter/flutter_assets/
+
+# extra 
+.agents

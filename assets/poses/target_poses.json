@@ -1,0 +1,322 @@
+[
+  {
+    "id": "casual_hands_pockets",
+    "name": "Casual Hands-in-Pockets",
+    "category": "Standing",
+    "tags": ["casual", "standing", "portrait", "everyday"],
+    "description": "Stand comfortably with shoulders relaxed and hands resting in pockets.",
+    "target_angles": {
+      "left_elbow": 140.0,
+      "right_elbow": 140.0,
+      "left_shoulder": 35.0,
+      "right_shoulder": 35.0,
+      "left_hip": 175.0,
+      "right_hip": 175.0,
+      "left_knee": 175.0,
+      "right_knee": 175.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.15},
+      {"name": "left_shoulder", "x": 0.38, "y": 0.30},
+      {"name": "right_shoulder", "x": 0.62, "y": 0.30},
+      {"name": "left_elbow", "x": 0.30, "y": 0.48},
+      {"name": "right_elbow", "x": 0.70, "y": 0.48},
+      {"name": "left_wrist", "x": 0.40, "y": 0.60},
+      {"name": "right_wrist", "x": 0.60, "y": 0.60},
+      {"name": "left_hip", "x": 0.42, "y": 0.60},
+      {"name": "right_hip", "x": 0.58, "y": 0.60},
+      {"name": "left_knee", "x": 0.43, "y": 0.78},
+      {"name": "right_knee", "x": 0.57, "y": 0.78},
+      {"name": "left_ankle", "x": 0.44, "y": 0.94},
+      {"name": "right_ankle", "x": 0.56, "y": 0.94}
+    ]
+  },
+  {
+    "id": "crossed_arms_power",
+    "name": "Crossed Arms Stance",
+    "category": "Standing",
+    "tags": ["confident", "business", "portrait", "standing"],
+    "description": "Cross arms naturally at chest height with body angled slightly off-center.",
+    "target_angles": {
+      "left_elbow": 45.0,
+      "right_elbow": 45.0,
+      "left_shoulder": 50.0,
+      "right_shoulder": 50.0,
+      "left_hip": 180.0,
+      "right_hip": 180.0,
+      "left_knee": 180.0,
+      "right_knee": 180.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.16},
+      {"name": "left_shoulder", "x": 0.36, "y": 0.30},
+      {"name": "right_shoulder", "x": 0.64, "y": 0.30},
+      {"name": "left_elbow", "x": 0.32, "y": 0.45},
+      {"name": "right_elbow", "x": 0.68, "y": 0.45},
+      {"name": "left_wrist", "x": 0.58, "y": 0.44},
+      {"name": "right_wrist", "x": 0.42, "y": 0.44},
+      {"name": "left_hip", "x": 0.42, "y": 0.60},
+      {"name": "right_hip", "x": 0.58, "y": 0.60},
+      {"name": "left_knee", "x": 0.43, "y": 0.78},
+      {"name": "right_knee", "x": 0.57, "y": 0.78},
+      {"name": "left_ankle", "x": 0.44, "y": 0.94},
+      {"name": "right_ankle", "x": 0.56, "y": 0.94}
+    ]
+  },
+  {
+    "id": "over_shoulder_glance",
+    "name": "Over-the-Shoulder Glance",
+    "category": "Portrait",
+    "tags": ["dramatic", "portrait", "angle", "selfie"],
+    "description": "Turn body 45 degrees away and glance back over front shoulder toward lens.",
+    "target_angles": {
+      "left_elbow": 160.0,
+      "right_elbow": 160.0,
+      "left_shoulder": 25.0,
+      "right_shoulder": 40.0,
+      "left_hip": 175.0,
+      "right_hip": 175.0,
+      "left_knee": 175.0,
+      "right_knee": 175.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.45, "y": 0.18},
+      {"name": "left_shoulder", "x": 0.35, "y": 0.32},
+      {"name": "right_shoulder", "x": 0.58, "y": 0.35},
+      {"name": "left_elbow", "x": 0.28, "y": 0.52},
+      {"name": "right_elbow", "x": 0.62, "y": 0.55},
+      {"name": "left_wrist", "x": 0.26, "y": 0.70},
+      {"name": "right_wrist", "x": 0.60, "y": 0.72},
+      {"name": "left_hip", "x": 0.38, "y": 0.62},
+      {"name": "right_hip", "x": 0.55, "y": 0.64},
+      {"name": "left_knee", "x": 0.40, "y": 0.80},
+      {"name": "right_knee", "x": 0.54, "y": 0.81},
+      {"name": "left_ankle", "x": 0.41, "y": 0.95},
+      {"name": "right_ankle", "x": 0.53, "y": 0.95}
+    ]
+  },
+  {
+    "id": "hand_on_hip_side",
+    "name": "One Hand on Hip",
+    "category": "Standing",
+    "tags": ["fashion", "standing", "dynamic"],
+    "description": "Place one hand firmly on hip, weight shifted to back leg for a flared silhouette.",
+    "target_angles": {
+      "left_elbow": 60.0,
+      "right_elbow": 160.0,
+      "left_shoulder": 45.0,
+      "right_shoulder": 25.0,
+      "left_hip": 170.0,
+      "right_hip": 175.0,
+      "left_knee": 165.0,
+      "right_knee": 180.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.48, "y": 0.15},
+      {"name": "left_shoulder", "x": 0.36, "y": 0.30},
+      {"name": "right_shoulder", "x": 0.62, "y": 0.30},
+      {"name": "left_elbow", "x": 0.22, "y": 0.42},
+      {"name": "right_elbow", "x": 0.68, "y": 0.50},
+      {"name": "left_wrist", "x": 0.38, "y": 0.58},
+      {"name": "right_wrist", "x": 0.66, "y": 0.68},
+      {"name": "left_hip", "x": 0.40, "y": 0.60},
+      {"name": "right_hip", "x": 0.58, "y": 0.60},
+      {"name": "left_knee", "x": 0.38, "y": 0.78},
+      {"name": "right_knee", "x": 0.58, "y": 0.78},
+      {"name": "left_ankle", "x": 0.39, "y": 0.94},
+      {"name": "right_ankle", "x": 0.58, "y": 0.94}
+    ]
+  },
+  {
+    "id": "sitting_lean_forward",
+    "name": "Sitting Leaning Forward",
+    "category": "Sitting",
+    "tags": ["sitting", "relaxed", "indoor", "portrait"],
+    "description": "Sit comfortably leaning elbows on knees, engaging with camera.",
+    "target_angles": {
+      "left_elbow": 90.0,
+      "right_elbow": 90.0,
+      "left_shoulder": 60.0,
+      "right_shoulder": 60.0,
+      "left_hip": 90.0,
+      "right_hip": 90.0,
+      "left_knee": 90.0,
+      "right_knee": 90.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.22},
+      {"name": "left_shoulder", "x": 0.35, "y": 0.36},
+      {"name": "right_shoulder", "x": 0.65, "y": 0.36},
+      {"name": "left_elbow", "x": 0.30, "y": 0.56},
+      {"name": "right_elbow", "x": 0.70, "y": 0.56},
+      {"name": "left_wrist", "x": 0.42, "y": 0.62},
+      {"name": "right_wrist", "x": 0.58, "y": 0.62},
+      {"name": "left_hip", "x": 0.38, "y": 0.68},
+      {"name": "right_hip", "x": 0.62, "y": 0.68},
+      {"name": "left_knee", "x": 0.32, "y": 0.80},
+      {"name": "right_knee", "x": 0.68, "y": 0.80},
+      {"name": "left_ankle", "x": 0.36, "y": 0.95},
+      {"name": "right_ankle", "x": 0.64, "y": 0.95}
+    ]
+  },
+  {
+    "id": "head_tilt_close_selfie",
+    "name": "Head-Tilt Selfie Portrait",
+    "category": "Selfie",
+    "tags": ["selfie", "close_up", "cute", "head_tilt"],
+    "description": "Slightly tilt head 15 degrees right for a relaxed close-up selfie.",
+    "target_angles": {
+      "left_elbow": 120.0,
+      "right_elbow": 120.0,
+      "left_shoulder": 40.0,
+      "right_shoulder": 40.0,
+      "left_hip": 180.0,
+      "right_hip": 180.0,
+      "left_knee": 180.0,
+      "right_knee": 180.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.53, "y": 0.28},
+      {"name": "left_shoulder", "x": 0.30, "y": 0.52},
+      {"name": "right_shoulder", "x": 0.70, "y": 0.48},
+      {"name": "left_elbow", "x": 0.18, "y": 0.75},
+      {"name": "right_elbow", "x": 0.82, "y": 0.70},
+      {"name": "left_wrist", "x": 0.25, "y": 0.90},
+      {"name": "right_wrist", "x": 0.75, "y": 0.88},
+      {"name": "left_hip", "x": 0.36, "y": 0.85},
+      {"name": "right_hip", "x": 0.64, "y": 0.85},
+      {"name": "left_knee", "x": 0.38, "y": 0.98},
+      {"name": "right_knee", "x": 0.62, "y": 0.98},
+      {"name": "left_ankle", "x": 0.39, "y": 1.00},
+      {"name": "right_ankle", "x": 0.61, "y": 1.00}
+    ]
+  },
+  {
+    "id": "hand_to_chin_thinker",
+    "name": "Hand to Chin Thoughtful",
+    "category": "Portrait",
+    "tags": ["thoughtful", "portrait", "hands_near_face"],
+    "description": "Rest finger gently near chin or cheekbone for a thoughtful portrait look.",
+    "target_angles": {
+      "left_elbow": 35.0,
+      "right_elbow": 150.0,
+      "left_shoulder": 60.0,
+      "right_shoulder": 30.0,
+      "left_hip": 175.0,
+      "right_hip": 175.0,
+      "left_knee": 175.0,
+      "right_knee": 175.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.20},
+      {"name": "left_shoulder", "x": 0.36, "y": 0.35},
+      {"name": "right_shoulder", "x": 0.64, "y": 0.35},
+      {"name": "left_elbow", "x": 0.38, "y": 0.52},
+      {"name": "right_elbow", "x": 0.70, "y": 0.55},
+      {"name": "left_wrist", "x": 0.48, "y": 0.28},
+      {"name": "right_wrist", "x": 0.68, "y": 0.72},
+      {"name": "left_hip", "x": 0.40, "y": 0.65},
+      {"name": "right_hip", "x": 0.60, "y": 0.65},
+      {"name": "left_knee", "x": 0.42, "y": 0.82},
+      {"name": "right_knee", "x": 0.58, "y": 0.82},
+      {"name": "left_ankle", "x": 0.43, "y": 0.96},
+      {"name": "right_ankle", "x": 0.57, "y": 0.96}
+    ]
+  },
+  {
+    "id": "peace_sign_selfie",
+    "name": "Peace Sign Selfie",
+    "category": "Selfie",
+    "tags": ["playful", "selfie", "v-sign", "fun"],
+    "description": "Hold up a peace sign beside eye level with a cheerful smile.",
+    "target_angles": {
+      "left_elbow": 40.0,
+      "right_elbow": 140.0,
+      "left_shoulder": 65.0,
+      "right_shoulder": 30.0,
+      "left_hip": 180.0,
+      "right_hip": 180.0,
+      "left_knee": 180.0,
+      "right_knee": 180.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.24},
+      {"name": "left_shoulder", "x": 0.32, "y": 0.42},
+      {"name": "right_shoulder", "x": 0.68, "y": 0.42},
+      {"name": "left_elbow", "x": 0.22, "y": 0.58},
+      {"name": "right_elbow", "x": 0.76, "y": 0.62},
+      {"name": "left_wrist", "x": 0.35, "y": 0.26},
+      {"name": "right_wrist", "x": 0.72, "y": 0.80},
+      {"name": "left_hip", "x": 0.38, "y": 0.72},
+      {"name": "right_hip", "x": 0.62, "y": 0.72},
+      {"name": "left_knee", "x": 0.40, "y": 0.88},
+      {"name": "right_knee", "x": 0.60, "y": 0.88},
+      {"name": "left_ankle", "x": 0.41, "y": 0.98},
+      {"name": "right_ankle", "x": 0.59, "y": 0.98}
+    ]
+  },
+  {
+    "id": "leaning_wall_casual",
+    "name": "Leaning Against Wall",
+    "category": "Outdoor",
+    "tags": ["outdoor", "urban", "leaning", "casual"],
+    "description": "Lean back shoulder against a surface with one knee bent crossing the other leg.",
+    "target_angles": {
+      "left_elbow": 150.0,
+      "right_elbow": 150.0,
+      "left_shoulder": 25.0,
+      "right_shoulder": 25.0,
+      "left_hip": 165.0,
+      "right_hip": 175.0,
+      "left_knee": 140.0,
+      "right_knee": 180.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.48, "y": 0.16},
+      {"name": "left_shoulder", "x": 0.38, "y": 0.30},
+      {"name": "right_shoulder", "x": 0.60, "y": 0.30},
+      {"name": "left_elbow", "x": 0.32, "y": 0.48},
+      {"name": "right_elbow", "x": 0.66, "y": 0.48},
+      {"name": "left_wrist", "x": 0.36, "y": 0.62},
+      {"name": "right_wrist", "x": 0.64, "y": 0.62},
+      {"name": "left_hip", "x": 0.42, "y": 0.58},
+      {"name": "right_hip", "x": 0.56, "y": 0.58},
+      {"name": "left_knee", "x": 0.48, "y": 0.74},
+      {"name": "right_knee", "x": 0.55, "y": 0.78},
+      {"name": "left_ankle", "x": 0.44, "y": 0.92},
+      {"name": "right_ankle", "x": 0.54, "y": 0.94}
+    ]
+  },
+  {
+    "id": "walking_candid_stride",
+    "name": "Candid Walking Stride",
+    "category": "Outdoor",
+    "tags": ["candid", "walking", "street", "motion"],
+    "description": "Capture natural stride with arms swinging subtly in opposite rhythm to legs.",
+    "target_angles": {
+      "left_elbow": 135.0,
+      "right_elbow": 145.0,
+      "left_shoulder": 40.0,
+      "right_shoulder": 30.0,
+      "left_hip": 150.0,
+      "right_hip": 150.0,
+      "left_knee": 160.0,
+      "right_knee": 160.0
+    },
+    "keypoints": [
+      {"name": "nose", "x": 0.50, "y": 0.14},
+      {"name": "left_shoulder", "x": 0.37, "y": 0.28},
+      {"name": "right_shoulder", "x": 0.63, "y": 0.28},
+      {"name": "left_elbow", "x": 0.28, "y": 0.44},
+      {"name": "right_elbow", "x": 0.70, "y": 0.46},
+      {"name": "left_wrist", "x": 0.24, "y": 0.58},
+      {"name": "right_wrist", "x": 0.74, "y": 0.60},
+      {"name": "left_hip", "x": 0.42, "y": 0.56},
+      {"name": "right_hip", "x": 0.58, "y": 0.56},
+      {"name": "left_knee", "x": 0.36, "y": 0.74},
+      {"name": "right_knee", "x": 0.64, "y": 0.74},
+      {"name": "left_ankle", "x": 0.34, "y": 0.92},
+      {"name": "right_ankle", "x": 0.66, "y": 0.92}
+    ]
+  }
+]
