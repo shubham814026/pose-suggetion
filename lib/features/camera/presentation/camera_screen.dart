@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -67,7 +68,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   bool _isVoiceMuted = false;
   bool _isGoodPoseTriggered = false;
   
-  // Persisted Stencil Color Toggle (Item 20)
+  // Phase 7 Auto-Capture Countdown Lock State (Item 21)
+  Timer? _autoCaptureTimer;
+  int _autoCaptureSeconds = 2;
+  bool _hasAutoCapturedForCurrentPose = false;
+
+  // Persisted Stencil Color Toggle
   Color _stencilColor = AppTheme.primaryCyan;
   final List<Color> _stencilColorOptions = const [
     AppTheme.primaryCyan,
@@ -113,6 +119,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _autoCaptureTimer?.cancel();
     _disposeCameraController();
     _streamPoseDetector.close();
     _ttsService.stop();
@@ -129,6 +136,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
       _disposeCameraController();
       _ttsService.stop();
+      _cancelAutoCaptureTimer();
     } else if (state == AppLifecycleState.resumed) {
       _checkPermissionAndInit();
     }
@@ -270,10 +278,15 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
           isGoodPose = score >= goodPoseThreshold;
           if (isGoodPose) {
-            suggestion = 'Great pose! Perfect alignment!';
+            suggestion = 'Perfect pose! Hold still for auto-capture...';
+            _triggerAutoCaptureCountdown();
+          } else {
+            _cancelAutoCaptureTimer();
           }
 
           _ttsService.speakSuggestion(suggestion);
+        } else {
+          _cancelAutoCaptureTimer();
         }
 
         if (mounted) {
@@ -292,6 +305,46 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  void _triggerAutoCaptureCountdown() {
+    if (_autoCaptureTimer != null || _hasAutoCapturedForCurrentPose || _isCapturing) {
+      return;
+    }
+
+    setState(() {
+      _autoCaptureSeconds = 2;
+    });
+
+    _autoCaptureTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      if (_autoCaptureSeconds > 1) {
+        setState(() {
+          _autoCaptureSeconds--;
+        });
+      } else {
+        timer.cancel();
+        _autoCaptureTimer = null;
+        _hasAutoCapturedForCurrentPose = true;
+        _takePicture();
+      }
+    });
+  }
+
+  void _cancelAutoCaptureTimer() {
+    if (_autoCaptureTimer != null) {
+      _autoCaptureTimer?.cancel();
+      _autoCaptureTimer = null;
+      if (mounted) {
+        setState(() {
+          _autoCaptureSeconds = 2;
+        });
+      }
+    }
+  }
+
   Future<void> _toggleCameraLens() async {
     if (_availableCameras.length <= 1 || _isCameraInitializing) return;
 
@@ -300,7 +353,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       _selectedCameraIndex = nextIndex;
       _isCameraInitializing = true;
       _livePoses = [];
+      _hasAutoCapturedForCurrentPose = false;
     });
+    _cancelAutoCaptureTimer();
 
     try {
       await _initializeController(_availableCameras[_selectedCameraIndex]);
@@ -339,6 +394,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               if (widget.onSelectPose != null) {
                 widget.onSelectPose!(pose);
               }
+              setState(() {
+                _hasAutoCapturedForCurrentPose = false;
+              });
+              _cancelAutoCaptureTimer();
               Navigator.pop(context);
             },
           ),
@@ -365,9 +424,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         _lastCapturedPath = photoFile.path;
       });
 
+      final targetName = widget.selectedTargetPose?.name ?? 'General Pose';
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          duration: const Duration(seconds: 3),
+          duration: const Duration(seconds: 4),
           backgroundColor: AppTheme.surfaceColor,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -389,7 +450,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Photo Captured!',
+                      'Auto-Captured Photo Saved!',
                       style: TextStyle(
                         color: AppTheme.textPrimary,
                         fontWeight: FontWeight.bold,
@@ -397,7 +458,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                       ),
                     ),
                     Text(
-                      'Alignment Match Score: ${_matchScore.toInt()}%',
+                      'Target: "$targetName" • Match: ${_matchScore.toInt()}%',
                       style: TextStyle(
                         color: _isGoodPoseTriggered ? AppTheme.successGreen : AppTheme.primaryCyan,
                         fontSize: 12,
@@ -438,7 +499,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       appBar: AppBar(
         title: const Text('Pose Assistant'),
         actions: [
-          // Stencil Color Toggle Button (Item 20)
           IconButton(
             icon: Icon(Icons.palette_outlined, color: _stencilColor),
             onPressed: _cycleStencilColor,
@@ -573,7 +633,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     child: CameraPreview(_cameraController!),
                   ),
 
-                  // Target Pose Silhouette Stencil Overlay (With Persisted Stencil Color)
+                  // Target Pose Silhouette Stencil Overlay
                   if (activePose != null)
                     Positioned.fill(
                       child: CustomPaint(
@@ -595,6 +655,49 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                           poses: _livePoses,
                           imageSize: Size(previewSize.height, previewSize.width),
                           lensDirection: currentCamera.lensDirection,
+                        ),
+                      ),
+                    ),
+
+                  // Phase 7 Auto-Capture Countdown Lock Badge Overlay (Item 21)
+                  if (_autoCaptureTimer != null)
+                    Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.85),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: AppTheme.successGreen, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppTheme.successGreen.withOpacity(0.4),
+                              blurRadius: 20,
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.camera_alt, color: AppTheme.successGreen, size: 36),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Auto-Capturing in $_autoCaptureSeconds',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Hold pose steady!',
+                              style: TextStyle(
+                                color: AppTheme.successGreen,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -706,7 +809,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 tooltip: 'Select Target Pose',
               ),
 
-              // Shutter Button
+              // Shutter Button with Auto-Capture Indicator
               GestureDetector(
                 onTap: _isCapturing ? null : _takePicture,
                 child: AnimatedContainer(

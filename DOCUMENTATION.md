@@ -21,6 +21,7 @@
 | **Pose Library** | Bundled JSON (`target_poses.json`) | 10 reference target poses with 3D keypoints & joint angle targets |
 | **Scene Matching** | `tflite_flutter` | `^0.10.4` MobileCLIP vector embeddings & cosine similarity pose ranker |
 | **Suggestion Engine**| Pure Dart Math Engine | 3D vertex angle comparison, joint deltas, numeric match scoring & rule table |
+| **Capture Flow** | Auto-Capture Timer Lock | 1.5s countdown hold on match score $\ge 80\%$ alignment lock |
 | **Text-to-Speech** | `flutter_tts` | `^4.0.2` Directional voice feedback (ON by default, 3–4s throttling guard) |
 | **Permissions** | `permission_handler` | `^11.3.1` Runtime camera & microphone permission handling |
 | **Persistence** | `shared_preferences` | `^2.2.3` User preference storage (`PreferencesService` for stencil color & voice toggle) |
@@ -50,11 +51,10 @@ graph TD
     CE -->|"Joint Deltas & Match Score"| SE["Directional Suggestion Engine (lib/features/suggestion_engine)"]
     SE -->|"Actionable Directional Text & Score HUD"| I
 
-    CE -->|"Match Score >= 80%"| GP["Good Pose Trigger (Glowing Green Aura & Audio Cue)"]
-    GP -->|Visual Cue| I
+    CE -->|"Match Score >= 80%"| GP["Good Pose Trigger & Auto-Capture Timer Lock"]
+    GP -->|"Auto takePicture()"| K["Photo Storage (XFile Local Cache + Metadata)"]
+    GP -->|Visual Glow Aura| I
 
-    B -->|"Manual Capture Tap"| K["Photo Storage (XFile Local Cache)"]
-    
     SE -->|"Directional Voice Cues (3-4s)"| H["Flutter TTS Engine (ON by default)"]
     H -->|"Spoken Guidance"| J["User"]
 ```
@@ -81,7 +81,7 @@ d:\pose-suggetion/
 │   ├── features/
 │   │   ├── camera/
 │   │   │   └── presentation/
-│   │   │       ├── camera_screen.dart   # Camera preview, live stream throttler, HUD score banner & shutter handler
+│   │   │       ├── camera_screen.dart   # Camera preview, live stream throttler, HUD banner, auto-capture lock & shutter handler
 │   │   │       └── widgets/
 │   │   │           └── permission_denied_view.dart # Permission request & settings fallback
 │   │   ├── pose_detection/
@@ -140,13 +140,8 @@ d:\pose-suggetion/
 
 ### Component Contracts
 
-#### 1. `PreferencesService` ([lib/core/services/preferences_service.dart](file:///d:/pose-suggetion/lib/core/services/preferences_service.dart))
-- **Purpose**: Persists user UI & voice preferences using `SharedPreferences`.
-- **Methods**:
-  - `saveStencilColor(Color color)`: Saves outline color hex string.
-  - `getStencilColor()`: Reads stencil color choice (Default `0xFF06B6D4` Cyan).
-  - `saveVoiceEnabled(bool enabled)`: Saves TTS voice preference.
-  - `getVoiceEnabled()`: Reads voice guidance preference (Default `true`).
+#### 1. `CameraScreen` Auto-Capture Lock ([lib/features/camera/presentation/camera_screen.dart](file:///d:/pose-suggetion/lib/features/camera/presentation/camera_screen.dart))
+- **Purpose**: Listens to real-time `_matchScore`. When match score crosses `goodPoseThreshold` ($\ge 80\%$), initiates a 1.5s lock timer (`_triggerAutoCaptureCountdown()`) and triggers `takePicture()`, displaying the captured photo along with target pose metadata.
 
 ---
 
