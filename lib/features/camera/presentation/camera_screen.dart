@@ -1,431 +1,219 @@
-import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../../../../core/services/preferences_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../pose_detection/presentation/widgets/pose_overlay_painter.dart';
 import '../../pose_detection/services/pose_detector_service.dart';
 import '../../pose_detection/utils/camera_image_converter.dart';
-import '../../pose_library/models/target_pose.dart';
-import '../../pose_library/presentation/pose_library_screen.dart';
-import '../../pose_library/presentation/widgets/target_pose_stencil_painter.dart';
-import '../../suggestion_engine/services/directional_suggestion_engine.dart';
-import '../../suggestion_engine/services/pose_comparison_engine.dart';
-import '../../suggestion_engine/services/tts_suggestion_service.dart';
 import 'widgets/permission_denied_view.dart';
 
 class CameraScreen extends StatefulWidget {
-  final TargetPose? selectedTargetPose;
-  final ValueChanged<TargetPose>? onSelectPose;
-
-  const CameraScreen({
-    super.key,
-    this.selectedTargetPose,
-    this.onSelectPose,
-  });
+  const CameraScreen({super.key});
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
 class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver {
-  PermissionStatus _permissionStatus = PermissionStatus.denied;
-  bool _isCheckingPermission = true;
-
-  // Camera Hardware State
   List<CameraDescription> _availableCameras = [];
-  CameraController? _cameraController;
+  CameraController? _controller;
   int _selectedCameraIndex = 0;
-  bool get canToggleLens => _availableCameras.length > 1;
-  bool _isCameraInitializing = false;
-  String? _cameraError;
-
-  // Photo Capture & Preview State
+  bool _isPermissionGranted = false;
+  bool _isInitializing = true;
   bool _isCapturing = false;
-  String? _lastCapturedPath;
+  String? _errorMessage;
+  XFile? _lastCapturedPhoto;
 
-  // Real-Time Live Stream Pose Detection State
-  final PoseDetectorService _streamPoseDetector = PoseDetectorService(
-    mode: PoseDetectionMode.stream,
-    model: PoseDetectionModel.base,
-  );
-  
-  bool _isStreamDetecting = false;
-  DateTime _lastFrameTimestamp = DateTime.now();
-  static const Duration _throttleDuration = Duration(milliseconds: 250);
-  List<Pose> _livePoses = [];
-
-  // Suggestion Engine & Good Pose Trigger Integration
-  final PoseComparisonEngine _comparisonEngine = PoseComparisonEngine();
-  final DirectionalSuggestionEngine _directionalEngine = DirectionalSuggestionEngine();
-  final TtsSuggestionService _ttsService = TtsSuggestionService();
-  final PreferencesService _preferencesService = PreferencesService();
-
-  double _matchScore = 0.0;
-  String _suggestionText = 'Align your posture with the target stencil.';
-  bool _isVoiceMuted = false;
-  bool _isGoodPoseTriggered = false;
-  String? _fallbackWarningMessage; // Item 22 Fallback Warning Message
-
-  // Phase 7 Auto-Capture Countdown Lock State
-  Timer? _autoCaptureTimer;
-  int _autoCaptureSeconds = 2;
-  bool _hasAutoCapturedForCurrentPose = false;
-
-  // Persisted Stencil Color Toggle
-  Color _stencilColor = AppTheme.primaryCyan;
-  final List<Color> _stencilColorOptions = const [
-    AppTheme.primaryCyan,
-    Colors.white,
-    Colors.black87,
-    AppTheme.accentViolet,
-  ];
-  int _stencilColorIndex = 0;
-
-  static const double goodPoseThreshold = 80.0;
+  // ML Kit Pose Detection & Stream Throttle Latch
+  late final PoseDetectorService _poseDetectorService;
+  List<Pose> _detectedPoses = [];
+  bool _isProcessingFrame = false;
+  int _lastFrameTimestamp = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadPreferences();
+    _poseDetectorService = PoseDetectorService();
     _checkPermissionAndInit();
-  }
-
-  Future<void> _loadPreferences() async {
-    final color = await _preferencesService.getStencilColor();
-    final voiceEnabled = await _preferencesService.getVoiceEnabled();
-    await _ttsService.initialize(voiceOnByDefault: voiceEnabled);
-
-    if (mounted) {
-      setState(() {
-        _stencilColor = color;
-        _isVoiceMuted = !_ttsService.isMuted ? false : !voiceEnabled;
-      });
-    }
-  }
-
-  Future<void> _cycleStencilColor() async {
-    final nextIndex = (_stencilColorIndex + 1) % _stencilColorOptions.length;
-    final newColor = _stencilColorOptions[nextIndex];
-    setState(() {
-      _stencilColorIndex = nextIndex;
-      _stencilColor = newColor;
-    });
-    await _preferencesService.saveStencilColor(newColor);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _autoCaptureTimer?.cancel();
-    _disposeCameraController();
-    _streamPoseDetector.close();
-    _ttsService.stop();
+    _stopImageStream();
+    _controller?.dispose();
+    _poseDetectorService.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final CameraController? controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
+    final CameraController? cameraController = _controller;
+    if (cameraController == null || !cameraController.value.isInitialized) {
       return;
     }
-
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
-      _disposeCameraController();
-      _ttsService.stop();
-      _cancelAutoCaptureTimer();
+    if (state == AppLifecycleState.inactive) {
+      _stopImageStream();
+      cameraController.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      _checkPermissionAndInit();
-    }
-  }
-
-  Future<void> _disposeCameraController() async {
-    final controller = _cameraController;
-    _cameraController = null;
-    if (controller != null) {
-      if (controller.value.isStreamingImages) {
-        await controller.stopImageStream();
-      }
-      await controller.dispose();
+      _initCamera(_selectedCameraIndex);
     }
   }
 
   Future<void> _checkPermissionAndInit() async {
-    final status = await Permission.camera.status;
-    if (!mounted) return;
-
-    setState(() {
-      _permissionStatus = status;
-      _isCheckingPermission = false;
-    });
-
-    if (status.isGranted) {
-      await _loadAvailableCameras();
-    }
-  }
-
-  Future<void> _requestPermission() async {
     final status = await Permission.camera.request();
-    if (!mounted) return;
-
-    setState(() {
-      _permissionStatus = status;
-    });
-
     if (status.isGranted) {
-      await _loadAvailableCameras();
+      setState(() {
+        _isPermissionGranted = true;
+      });
+      await _initCameraSystem();
+    } else {
+      setState(() {
+        _isPermissionGranted = false;
+        _isInitializing = false;
+      });
     }
   }
 
-  Future<void> _loadAvailableCameras() async {
-    if (_isCameraInitializing) return;
-
-    setState(() {
-      _isCameraInitializing = true;
-      _cameraError = null;
-    });
-
+  Future<void> _initCameraSystem() async {
     try {
       _availableCameras = await availableCameras();
-      if (_availableCameras.isNotEmpty) {
-        final frontIndex = _availableCameras.indexWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-        );
-        _selectedCameraIndex = frontIndex != -1 ? frontIndex : 0;
-        await _initializeController(_availableCameras[_selectedCameraIndex]);
-      } else {
+      if (_availableCameras.isEmpty) {
         setState(() {
-          _cameraError = 'No camera devices found on this device.';
+          _errorMessage = 'No camera hardware found on device.';
+          _isInitializing = false;
         });
+        return;
       }
-    } on CameraException catch (e) {
-      setState(() {
-        _cameraError = 'Camera Hardware Error: ${e.description ?? e.code}';
-      });
+      
+      int defaultIndex = _availableCameras.indexWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.front,
+      );
+      if (defaultIndex == -1) defaultIndex = 0;
+      
+      await _initCamera(defaultIndex);
     } catch (e) {
       setState(() {
-        _cameraError = 'Failed to load camera hardware: $e';
+        _errorMessage = 'Failed to discover camera hardware: $e';
+        _isInitializing = false;
       });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCameraInitializing = false;
-        });
-      }
     }
   }
 
-  Future<void> _initializeController(CameraDescription description) async {
-    await _disposeCameraController();
+  Future<void> _initCamera(int cameraIndex) async {
+    if (_availableCameras.isEmpty) return;
 
+    setState(() {
+      _isInitializing = true;
+      _errorMessage = null;
+    });
+
+    final previousController = _controller;
+    await _stopImageStream();
+
+    final camera = _availableCameras[cameraIndex];
+
+    // Use ResolutionPreset.medium (720p) for 3x faster ML Kit frame processing & lower memory bandwidth
     final controller = CameraController(
-      description,
-      ResolutionPreset.high,
+      camera,
+      ResolutionPreset.medium,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.yuv420,
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
 
-    _cameraController = controller;
+    await previousController?.dispose();
 
     try {
       await controller.initialize();
-      await controller.startImageStream(_onLiveCameraFrame);
-    } on CameraException catch (e) {
-      if (mounted) {
-        setState(() {
-          _cameraError = 'Failed to start camera hardware: ${e.description ?? e.code}';
-        });
-      }
-    }
+      if (!mounted) return;
+      
+      setState(() {
+        _controller = controller;
+        _selectedCameraIndex = cameraIndex;
+        _isInitializing = false;
+      });
 
-    if (mounted) {
-      setState(() {});
+      _startImageStream();
+    } on CameraException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Camera hardware error: ${e.description} (Code: ${e.code})';
+        _isInitializing = false;
+      });
     }
   }
 
-  void _onLiveCameraFrame(CameraImage image) async {
-    final now = DateTime.now();
-    if (_isStreamDetecting || now.difference(_lastFrameTimestamp) < _throttleDuration) {
+  void _startImageStream() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    try {
+      controller.startImageStream(_processCameraFrame);
+    } catch (e) {
+      // Ignore if stream already active
+    }
+  }
+
+  Future<void> _stopImageStream() async {
+    final controller = _controller;
+    if (controller != null && controller.value.isStreamingImages) {
+      try {
+        await controller.stopImageStream();
+      } catch (e) {
+        // Stream stopped
+      }
+    }
+  }
+
+  void _processCameraFrame(CameraImage image) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // Ultra-Fast 60ms Stream Throttle Latch (up to 16-20 FPS)
+    if (_isProcessingFrame || (now - _lastFrameTimestamp < 60)) {
       return;
     }
 
-    _isStreamDetecting = true;
+    _isProcessingFrame = true;
     _lastFrameTimestamp = now;
 
     try {
-      if (_availableCameras.isEmpty) return;
-      final currentCamera = _availableCameras[_selectedCameraIndex];
-      final inputImage = convertCameraImageToInputImage(image, currentCamera);
+      final camera = _availableCameras[_selectedCameraIndex];
+      final inputImage = CameraImageConverter.inputImageFromCameraImage(
+        image: image,
+        camera: camera,
+      );
 
       if (inputImage != null) {
-        final poses = await _streamPoseDetector.processInputImage(inputImage);
-        
-        double score = 0.0;
-        String suggestion = 'Align your posture with the target stencil.';
-        bool isGoodPose = false;
-        String? warning;
-
-        // Phase 8 Error Handling: Handle No-Person-Detected & Low Lighting / Keypoint Confidence
-        if (poses.isEmpty) {
-          suggestion = 'No person detected in camera view. Step into frame.';
-          warning = 'No person detected';
-          _cancelAutoCaptureTimer();
-        } else if (widget.selectedTargetPose != null) {
-          final livePose = poses.first;
-          
-          // Check average landmark likelihood (lighting / occlusion check)
-          final landmarks = livePose.landmarks.values;
-          if (landmarks.isNotEmpty) {
-            final avgLikelihood = landmarks.fold<double>(0.0, (sum, l) => sum + l.likelihood) / landmarks.length;
-            if (avgLikelihood < 0.6) {
-              warning = 'Low lighting or poor visibility detected';
-            }
-          }
-
-          final deltas = _comparisonEngine.comparePoses(
-            livePose: livePose,
-            targetPose: widget.selectedTargetPose!,
-          );
-          score = _comparisonEngine.calculateMatchScore(deltas);
-          final suggestionsList = _directionalEngine.generateSuggestions(deltas);
-          suggestion = suggestionsList.first;
-
-          isGoodPose = score >= goodPoseThreshold;
-          if (isGoodPose) {
-            suggestion = 'Perfect pose! Hold still for auto-capture...';
-            _triggerAutoCaptureCountdown();
-          } else {
-            _cancelAutoCaptureTimer();
-          }
-
-          _ttsService.speakSuggestion(suggestion);
+        final poses = await _poseDetectorService.processImage(inputImage);
+        if (poses.isNotEmpty) {
+          debugPrint('[POSE ENGINE] Success: ${poses.length} pose(s) detected with ${poses.first.landmarks.length} landmarks');
         }
-
         if (mounted) {
           setState(() {
-            _livePoses = poses;
-            _matchScore = score;
-            _suggestionText = suggestion;
-            _isGoodPoseTriggered = isGoodPose;
-            _fallbackWarningMessage = warning;
+            _detectedPoses = poses;
           });
         }
-      }
-    } catch (e) {
-      // Handle processing anomalies
-    } finally {
-      _isStreamDetecting = false;
-    }
-  }
-
-  void _triggerAutoCaptureCountdown() {
-    if (_autoCaptureTimer != null || _hasAutoCapturedForCurrentPose || _isCapturing) {
-      return;
-    }
-
-    setState(() {
-      _autoCaptureSeconds = 2;
-    });
-
-    _autoCaptureTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-
-      if (_autoCaptureSeconds > 1) {
-        setState(() {
-          _autoCaptureSeconds--;
-        });
       } else {
-        timer.cancel();
-        _autoCaptureTimer = null;
-        _hasAutoCapturedForCurrentPose = true;
-        _takePicture();
+        debugPrint('[POSE ENGINE] Warning: inputImage conversion returned null');
       }
-    });
-  }
-
-  void _cancelAutoCaptureTimer() {
-    if (_autoCaptureTimer != null) {
-      _autoCaptureTimer?.cancel();
-      _autoCaptureTimer = null;
-      if (mounted) {
-        setState(() {
-          _autoCaptureSeconds = 2;
-        });
-      }
+    } catch (e, stack) {
+      debugPrint('[POSE ENGINE] Error processing frame: $e\n$stack');
+    } finally {
+      _isProcessingFrame = false;
     }
   }
 
   Future<void> _toggleCameraLens() async {
-    if (_availableCameras.length <= 1 || _isCameraInitializing) return;
-
-    final nextIndex = (_selectedCameraIndex + 1) % _availableCameras.length;
-    setState(() {
-      _selectedCameraIndex = nextIndex;
-      _isCameraInitializing = true;
-      _livePoses = [];
-      _hasAutoCapturedForCurrentPose = false;
-    });
-    _cancelAutoCaptureTimer();
-
-    try {
-      await _initializeController(_availableCameras[_selectedCameraIndex]);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCameraInitializing = false;
-        });
-      }
-    }
+    if (_availableCameras.length < 2) return;
+    final newIndex = (_selectedCameraIndex + 1) % _availableCameras.length;
+    await _initCamera(newIndex);
   }
 
-  Future<void> _toggleVoiceMute() async {
-    final newMuteState = !_isVoiceMuted;
-    setState(() {
-      _isVoiceMuted = newMuteState;
-      _ttsService.setMuted(newMuteState);
-    });
-    await _preferencesService.saveVoiceEnabled(!newMuteState);
-  }
-
-  void _openPosePickerModal() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.75,
-        maxChildSize: 0.9,
-        minChildSize: 0.5,
-        builder: (context, scrollController) => ClipRRect(
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          child: PoseLibraryScreen(
-            selectedPose: widget.selectedTargetPose,
-            onSelectPose: (pose) {
-              if (widget.onSelectPose != null) {
-                widget.onSelectPose!(pose);
-              }
-              setState(() {
-                _hasAutoCapturedForCurrentPose = false;
-              });
-              _cancelAutoCaptureTimer();
-              Navigator.pop(context);
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _takePicture() async {
-    final controller = _cameraController;
+  Future<void> _takePhoto() async {
+    final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _isCapturing) {
       return;
     }
@@ -435,548 +223,323 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     });
 
     try {
-      final XFile photoFile = await controller.takePicture();
+      await _stopImageStream();
+      final photo = await controller.takePicture();
+      _startImageStream();
+
       if (!mounted) return;
 
       setState(() {
-        _lastCapturedPath = photoFile.path;
+        _lastCapturedPhoto = photo;
+        _isCapturing = false;
       });
 
-      final targetName = widget.selectedTargetPose?.name ?? 'General Pose';
-
+      _showPhotoCapturedBottomSheet(photo);
+    } catch (e) {
+      _startImageStream();
+      if (!mounted) return;
+      setState(() {
+        _isCapturing = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          duration: const Duration(seconds: 4),
-          backgroundColor: AppTheme.surfaceColor,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          content: Row(
+          content: Text('Failed to capture photo: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  void _showPhotoCapturedBottomSheet(XFile photo) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.textSecondary.withAlpha(102),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Row(
+                children: [
+                  Icon(Icons.check_circle_outline, color: AppTheme.successGreen, size: 24),
+                  SizedBox(width: 10),
+                  Text(
+                    'Photo Captured',
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
               ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  File(photoFile.path),
-                  width: 44,
-                  height: 44,
-                  fit: BoxFit.cover,
+                borderRadius: BorderRadius.circular(16),
+                child: SizedBox(
+                  height: 200,
+                  width: double.infinity,
+                  child: Image.file(
+                    File(photo.path),
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Photo Captured!',
-                      style: TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                    ),
-                    Text(
-                      'Target: "$targetName" • Match: ${_matchScore.toInt()}%',
-                      style: TextStyle(
-                        color: _isGoodPoseTriggered ? AppTheme.successGreen : AppTheme.primaryCyan,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
+              const SizedBox(height: 16),
+              Text(
+                'Saved to local cache: ${photo.path.split('/').last}',
+                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              const Icon(Icons.check_circle, color: AppTheme.successGreen, size: 22),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryCyan,
+                  foregroundColor: Colors.black,
+                  minimumSize: const Size.fromHeight(48),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('Continue', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
             ],
           ),
-        ),
-      );
-    } on CameraException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.redAccent,
-          content: Text('Failed to take picture: ${e.description ?? e.code}'),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isCapturing = false;
-        });
-      }
-    }
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool canToggleLens = _availableCameras.length > 1;
+    if (!_isPermissionGranted) {
+      return PermissionDeniedView(
+        onRequestPermission: _checkPermissionAndInit,
+      );
+    }
+
+    final controller = _controller;
+    final isInitialized = controller != null && controller.value.isInitialized;
+
+    Size previewSize = Size.zero;
+    if (isInitialized) {
+      final size = controller.value.previewSize!;
+      previewSize = Size(size.height, size.width);
+    }
 
     return Scaffold(
-      backgroundColor: AppTheme.darkBackground,
-      appBar: AppBar(
-        title: const Text('Pose Assistant'),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.palette_outlined, color: _stencilColor),
-            onPressed: _cycleStencilColor,
-            tooltip: 'Cycle Stencil Color',
-          ),
-          IconButton(
-            icon: Icon(
-              _isVoiceMuted ? Icons.volume_off : Icons.volume_up,
-              color: _isVoiceMuted ? AppTheme.warningAmber : AppTheme.primaryCyan,
-            ),
-            onPressed: _toggleVoiceMute,
-            tooltip: _isVoiceMuted ? 'Unmute Voice Guidance' : 'Mute Voice Guidance',
-          ),
-          if (_permissionStatus.isGranted && _cameraController != null && _cameraController!.value.isInitialized) ...[
-            IconButton(
-              icon: Icon(
-                canToggleLens ? Icons.flip_camera_ios : Icons.flip_camera_ios_outlined,
-                color: canToggleLens ? AppTheme.primaryCyan : AppTheme.textSecondary,
-              ),
-              onPressed: canToggleLens ? _toggleCameraLens : null,
-              tooltip: canToggleLens ? 'Switch Camera Lens' : 'Single Camera Available',
-            ),
-          ],
-        ],
-      ),
+      backgroundColor: Colors.black,
       body: SafeArea(
-        child: _buildContent(),
-      ),
-    );
-  }
-
-  Widget _buildContent() {
-    if (_isCheckingPermission) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppTheme.primaryCyan),
-      );
-    }
-
-    if (!_permissionStatus.isGranted) {
-      return PermissionDeniedView(
-        status: _permissionStatus,
-        onRequestPermission: _requestPermission,
-      );
-    }
-
-    if (_cameraError != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
-              const SizedBox(height: 16),
-              Text(
-                _cameraError!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: _loadAvailableCameras,
-                icon: const Icon(Icons.refresh),
-                label: const Text('Retry Camera Initialization'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryCyan,
-                  foregroundColor: Colors.black,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (_isCameraInitializing || _cameraController == null || !_cameraController!.value.isInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            CircularProgressIndicator(color: AppTheme.primaryCyan),
-            SizedBox(height: 16),
-            Text(
-              'Initializing Camera Hardware...',
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final currentCamera = _availableCameras[_selectedCameraIndex];
-    final previewSize = _cameraController!.value.previewSize;
-    final activePose = widget.selectedTargetPose;
-
-    final scoreInt = _matchScore.toInt();
-    final scoreColor = _isGoodPoseTriggered
-        ? AppTheme.successGreen
-        : scoreInt >= 60
-            ? AppTheme.primaryCyan
-            : AppTheme.warningAmber;
-
-    return Column(
-      children: [
-        Expanded(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            margin: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: scoreColor,
-                width: _isGoodPoseTriggered ? 3.5 : 1.8,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: _isGoodPoseTriggered ? AppTheme.successGreen.withOpacity(0.5) : Colors.black.withOpacity(0.4),
-                  blurRadius: _isGoodPoseTriggered ? 24 : 16,
-                  offset: const Offset(0, 6),
+            // 1. Live Camera Preview Viewport
+            if (isInitialized)
+              Center(
+                child: CameraPreview(controller),
+              )
+            else if (_isInitializing)
+              const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: AppTheme.primaryCyan),
+                    SizedBox(height: 16),
+                    Text(
+                      'Initializing Camera & AI Engine...',
+                      style: TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(22),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // Camera Preview
-                  Center(
-                    child: CameraPreview(_cameraController!),
-                  ),
-
-                  // Target Pose Silhouette Stencil Overlay
-                  if (activePose != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: TargetPoseStencilPainter(
-                          targetPose: activePose,
-                          stencilColor: _isGoodPoseTriggered
-                              ? AppTheme.successGreen.withOpacity(0.8)
-                              : _stencilColor.withOpacity(0.65),
-                          lensDirection: currentCamera.lensDirection,
-                        ),
-                      ),
-                    ),
-
-                  // Real-time Live User Skeleton Overlay
-                  if (_livePoses.isNotEmpty && previewSize != null)
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: PoseOverlayPainter(
-                          poses: _livePoses,
-                          imageSize: Size(previewSize.height, previewSize.width),
-                          lensDirection: currentCamera.lensDirection,
-                        ),
-                      ),
-                    ),
-
-                  // Phase 8 Fallback Warning Message Banner (Item 22)
-                  if (_fallbackWarningMessage != null && _autoCaptureTimer == null)
-                    Positioned(
-                      bottom: 16,
-                      left: 16,
-                      right: 16,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.warningAmber.withOpacity(0.9),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.warning_amber_rounded, color: Colors.black, size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _fallbackWarningMessage!,
-                                style: const TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  // Auto-Capture Countdown Lock Badge Overlay
-                  if (_autoCaptureTimer != null)
-                    Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.85),
-                          borderRadius: BorderRadius.circular(24),
-                          border: Border.all(color: AppTheme.successGreen, width: 2),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppTheme.successGreen.withOpacity(0.4),
-                              blurRadius: 20,
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.camera_alt, color: AppTheme.successGreen, size: 36),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Auto-Capturing in $_autoCaptureSeconds',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              'Hold pose steady!',
-                              style: TextStyle(
-                                color: AppTheme.successGreen,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  // TOP HUD BANNER
-                  Positioned(
-                    top: 12,
-                    left: 12,
-                    right: 12,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 250),
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.85),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: scoreColor.withOpacity(0.8), width: _isGoodPoseTriggered ? 2 : 1),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: scoreColor.withOpacity(0.2),
-                              shape: BoxShape.circle,
-                              border: Border.all(color: scoreColor, width: 1.5),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (_isGoodPoseTriggered) ...[
-                                  const Icon(Icons.check, color: AppTheme.successGreen, size: 14),
-                                  const SizedBox(width: 2),
-                                ],
-                                Text(
-                                  '$scoreInt%',
-                                  style: TextStyle(
-                                    color: scoreColor,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _suggestionText,
-                                  style: TextStyle(
-                                    color: _isGoodPoseTriggered ? AppTheme.successGreen : AppTheme.textPrimary,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  activePose != null ? 'Target: ${activePose.name}' : 'Select a target pose',
-                                  style: const TextStyle(
-                                    color: AppTheme.textSecondary,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            icon: Icon(
-                              _isVoiceMuted ? Icons.volume_off : Icons.volume_up,
-                              size: 20,
-                              color: _isVoiceMuted ? AppTheme.textSecondary : AppTheme.primaryCyan,
-                            ),
-                            onPressed: _toggleVoiceMute,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Flash capture animation overlay
-                  if (_isCapturing)
-                    Container(
-                      color: Colors.white.withOpacity(0.4),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-
-        // Controls Bar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-          decoration: const BoxDecoration(
-            color: AppTheme.surfaceColor,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.collections, color: AppTheme.primaryCyan, size: 28),
-                onPressed: _openPosePickerModal,
-                tooltip: 'Select Target Pose',
               ),
 
-              // Shutter Button
-              GestureDetector(
-                onTap: _isCapturing ? null : _takePicture,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 76,
-                  height: 76,
+            // 2. Real-Time ML Kit Skeleton Overlay Layer
+            if (isInitialized)
+              CustomPaint(
+                painter: PoseOverlayPainter(
+                  poses: _detectedPoses,
+                  previewSize: previewSize,
+                  lensDirection: _availableCameras[_selectedCameraIndex].lensDirection,
+                ),
+              ),
+
+            // 3. Pose Detection Status HUD (Top Left)
+            if (isInitialized)
+              Positioned(
+                top: 16,
+                left: 16,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
+                    color: Colors.black.withAlpha(166),
+                    borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: _isGoodPoseTriggered ? AppTheme.successGreen : Colors.white,
-                      width: 4,
+                      color: _detectedPoses.isNotEmpty ? AppTheme.successGreen : AppTheme.warningAmber,
+                      width: 1.5,
                     ),
-                    boxShadow: _isGoodPoseTriggered
-                        ? [
-                            BoxShadow(
-                              color: AppTheme.successGreen.withOpacity(0.6),
-                              blurRadius: 16,
-                              spreadRadius: 2,
-                            ),
-                          ]
-                        : [],
                   ),
-                  child: Center(
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      width: _isCapturing ? 48 : 62,
-                      height: _isCapturing ? 48 : 62,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _isCapturing
-                            ? AppTheme.accentViolet
-                            : _isGoodPoseTriggered
-                                ? AppTheme.successGreen
-                                : AppTheme.primaryCyan,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _detectedPoses.isNotEmpty ? AppTheme.successGreen : AppTheme.warningAmber,
+                        ),
                       ),
-                      child: _isCapturing
-                          ? const Center(
-                              child: SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            )
-                          : null,
-                    ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _detectedPoses.isNotEmpty
+                            ? 'Pose Tracking Active (${_detectedPoses.first.landmarks.length} pts)'
+                            : 'Searching for Person...',
+                        style: const TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
 
-              // Thumbnail Preview or Switch Lens
-              _lastCapturedPath != null
-                  ? GestureDetector(
+            // 4. Hardware Error Banner
+            if (_errorMessage != null)
+              Positioned(
+                top: 16,
+                left: 16,
+                right: 16,
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.warningAmber.withAlpha(230),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.black),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _errorMessage!,
+                          style: const TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.refresh, color: Colors.black),
+                        onPressed: () => _initCamera(_selectedCameraIndex),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            // 5. Top Right Lens Switcher
+            if (isInitialized)
+              Positioned(
+                top: 16,
+                right: 16,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(128),
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.flip_camera_ios, color: AppTheme.textPrimary),
+                    onPressed: _availableCameras.length > 1 ? _toggleCameraLens : null,
+                  ),
+                ),
+              ),
+
+            // 6. Bottom Controls (Shutter Button & Thumbnail)
+            if (isInitialized)
+              Positioned(
+                bottom: 24,
+                left: 0,
+                right: 0,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    // Last photo thumbnail preview
+                    GestureDetector(
                       onTap: () {
-                        showDialog(
-                          context: context,
-                          builder: (context) => Dialog(
-                            backgroundColor: AppTheme.surfaceColor,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                ClipRRect(
-                                  borderRadius: const BorderRadius.vertical(
-                                    top: Radius.circular(20),
-                                  ),
-                                  child: Image.file(
-                                    File(_lastCapturedPath!),
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.all(16.0),
-                                  child: TextButton(
-                                    onPressed: () => Navigator.pop(context),
-                                    child: const Text(
-                                      'Close Preview',
-                                      style: TextStyle(color: AppTheme.primaryCyan),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
+                        if (_lastCapturedPhoto != null) {
+                          _showPhotoCapturedBottomSheet(_lastCapturedPhoto!);
+                        }
                       },
                       child: Container(
-                        width: 40,
-                        height: 40,
+                        width: 48,
+                        height: 48,
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: AppTheme.primaryCyan, width: 1.5),
+                          color: AppTheme.surfaceColor,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppTheme.primaryCyan, width: 2),
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.file(
-                            File(_lastCapturedPath!),
-                            fit: BoxFit.cover,
+                        child: _lastCapturedPhoto != null
+                            ? ClipOval(
+                                child: Image.file(
+                                  File(_lastCapturedPhoto!.path),
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            : const Icon(Icons.image_outlined, color: AppTheme.textSecondary),
+                      ),
+                    ),
+
+                    // Shutter button
+                    GestureDetector(
+                      onTap: _isCapturing ? null : _takePhoto,
+                      child: Container(
+                        width: 72,
+                        height: 72,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppTheme.primaryCyan, width: 4),
+                        ),
+                        child: Center(
+                          child: Container(
+                            width: 56,
+                            height: 56,
+                            decoration: BoxDecoration(
+                              color: _isCapturing ? AppTheme.warningAmber : AppTheme.primaryCyan,
+                              shape: BoxShape.circle,
+                            ),
+                            child: _isCapturing
+                                ? const Padding(
+                                    padding: EdgeInsets.all(16.0),
+                                    child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3),
+                                  )
+                                : null,
                           ),
                         ),
                       ),
-                    )
-                  : IconButton(
-                      icon: Icon(
-                        canToggleLens ? Icons.flip_camera_ios : Icons.volume_up,
-                        color: AppTheme.textSecondary,
-                        size: 28,
-                      ),
-                      onPressed: canToggleLens ? _toggleCameraLens : null,
-                      tooltip: canToggleLens ? 'Switch Camera' : 'Voice Guidance',
                     ),
-            ],
-          ),
+
+                    // Spacing balance
+                    const SizedBox(width: 48),
+                  ],
+                ),
+              ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

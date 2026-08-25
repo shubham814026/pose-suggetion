@@ -20,9 +20,18 @@ The documentation is organized into focused reference guides within the [`docs/`
 * **Path**: [`docs/SYSTEM_ARCHITECTURE.md`](file:///d:/pose-suggetion/docs/SYSTEM_ARCHITECTURE.md)
 * **Contents**: System architecture diagrams, data flow pipelines, 3D vertex angle formulas, MobileCLIP cosine similarity matching equations, coordinate transformations, and front-camera horizontal mirroring logic.
 
-### 4. 🧩 [API & Module Reference](file:///d:/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
-* **Path**: [`docs/API_AND_MODULES_REFERENCE.md`](file:///d:/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
+### 4. 🧩 [API & Module Reference](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
+* **Path**: [`docs/API_AND_MODULES_REFERENCE.md`](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/API_AND_MODULES_REFERENCE.md)
 * **Contents**: Complete API contracts and module specifications for all services (`PoseComparisonEngine`, `DirectionalSuggestionEngine`, `TtsSuggestionService`, `PoseRecommendationService`, `PreferencesService`), models, custom painters (`TargetPoseStencilPainter`), and converters.
+
+### 5. 📈 [Progress Tracking & Phase Roadmap](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/progress.md)
+* **Path**: [`docs/progress.md`](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/progress.md)
+* **Contents**: End-to-end implementation status matrix across Phases 0–14, multi-tier frame scheduler overview, feature verification matrix, and milestone verification checklist.
+
+### 6. 🧠 [ML Model Training Lifecycle & Epoch Roadmap](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/epoch.md)
+* **Path**: [`docs/epoch.md`](file:///home/pratham/projects/pose-generation-app/pose-suggetion/docs/epoch.md)
+* **Contents**: Web dataset scraping pipeline, automated LAION aesthetic filtering, DWPose keypoint annotation, RTMPose-tiny evaluation model, PoseDiff-X diffusion generator architecture, mathematical loss functions ($\mathcal{L}_{\text{OKS}}, \mathcal{L}_{\text{simple}}, \mathcal{L}_{\text{limb}}, \mathcal{L}_{\text{anatomical}}$), and 100-epoch training schedule.
+
 
 ---
 

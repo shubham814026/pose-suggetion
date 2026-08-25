@@ -10,7 +10,7 @@ class PreferencesService {
   /// Save stencil outline color choice to SharedPreferences
   Future<void> saveStencilColor(Color color) async {
     final prefs = await SharedPreferences.getInstance();
-    final hexString = '0x${color.value.toRadixString(16).padLeft(8, '0').toUpperCase()}';
+    final hexString = '0x${color.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
     await prefs.setString(keyStencilColor, hexString);
   }
 

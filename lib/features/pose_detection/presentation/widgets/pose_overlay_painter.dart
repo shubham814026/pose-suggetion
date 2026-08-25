@@ -3,120 +3,94 @@ import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../../../../core/theme/app_theme.dart';
 
-/// CustomPainter rendering real-time ML Kit Pose keypoints and skeleton joint lines.
 class PoseOverlayPainter extends CustomPainter {
   final List<Pose> poses;
-  final Size imageSize;
+  final Size previewSize;
   final CameraLensDirection lensDirection;
+
+  static final Paint _bonePaint = Paint()
+    ..color = AppTheme.primaryCyan
+    ..strokeWidth = 3.5
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round;
+
+  static final Paint _jointDotPaint = Paint()
+    ..color = AppTheme.accentViolet
+    ..style = PaintingStyle.fill;
+
+  static final Paint _jointDotOuterPaint = Paint()
+    ..color = AppTheme.successGreen
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.0;
 
   PoseOverlayPainter({
     required this.poses,
-    required this.imageSize,
+    required this.previewSize,
     required this.lensDirection,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (poses.isEmpty || imageSize.width == 0 || imageSize.height == 0) return;
+    if (poses.isEmpty || previewSize.width == 0 || previewSize.height == 0) return;
 
-    final Paint landmarkPaint = Paint()
-      ..color = AppTheme.primaryCyan
-      ..style = PaintingStyle.fill;
-
-    final Paint jointLinePaint = Paint()
-      ..color = AppTheme.successGreen
-      ..strokeWidth = 3.0
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final Paint headPointPaint = Paint()
-      ..color = AppTheme.accentViolet
-      ..style = PaintingStyle.fill;
-
-    // Coordinate scaling factors
-    final double scaleX = size.width / imageSize.width;
-    final double scaleY = size.height / imageSize.height;
-    final bool isFrontCamera = lensDirection == CameraLensDirection.front;
+    final double scaleX = size.width / previewSize.width;
+    final double scaleY = size.height / previewSize.height;
 
     for (final pose in poses) {
-      // Helper function to translate ML Kit landmark coordinates to canvas offsets
-      Offset translateXFile(PoseLandmark landmark) {
-        double x = landmark.x * scaleX;
-        double y = landmark.y * scaleY;
-
-        // Mirror X axis if using front camera (selfie view)
-        if (isFrontCamera) {
-          x = size.width - x;
-        }
-
-        return Offset(x, y);
-      }
-
-      // Draw skeleton joint connection lines
-      void drawLine(PoseLandmarkType type1, PoseLandmarkType type2) {
+      void drawBone(PoseLandmarkType type1, PoseLandmarkType type2) {
         final landmark1 = pose.landmarks[type1];
         final landmark2 = pose.landmarks[type2];
-
-        if (landmark1 != null && landmark2 != null) {
-          // Render line only if both keypoints have acceptable likelihood confidence
-          if (landmark1.likelihood > 0.5 && landmark2.likelihood > 0.5) {
-            canvas.drawLine(
-              translateXFile(landmark1),
-              translateXFile(landmark2),
-              jointLinePaint,
-            );
-          }
+        if (landmark1 != null && landmark2 != null && landmark1.likelihood > 0.15 && landmark2.likelihood > 0.15) {
+          final p1 = _translateXy(landmark1.x, landmark1.y, size, scaleX, scaleY);
+          final p2 = _translateXy(landmark2.x, landmark2.y, size, scaleX, scaleY);
+          canvas.drawLine(p1, p2, _bonePaint);
         }
       }
 
-      // Torso & Limbs Skeleton connections
-      drawLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder);
-      drawLine(PoseLandmarkType.leftHip, PoseLandmarkType.rightHip);
-      drawLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip);
-      drawLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip);
+      // Torso
+      drawBone(PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder);
+      drawBone(PoseLandmarkType.leftHip, PoseLandmarkType.rightHip);
+      drawBone(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip);
+      drawBone(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip);
 
-      // Left Arm
-      drawLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow);
-      drawLine(PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist);
+      // Arms
+      drawBone(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow);
+      drawBone(PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist);
+      drawBone(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow);
+      drawBone(PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist);
 
-      // Right Arm
-      drawLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow);
-      drawLine(PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist);
+      // Legs
+      drawBone(PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee);
+      drawBone(PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle);
+      drawBone(PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee);
+      drawBone(PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle);
 
-      // Left Leg
-      drawLine(PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee);
-      drawLine(PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle);
-
-      // Right Leg
-      drawLine(PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee);
-      drawLine(PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle);
-
-      // Draw keypoint dots
-      pose.landmarks.forEach((type, landmark) {
-        if (landmark.likelihood > 0.5) {
-          final offset = translateXFile(landmark);
-
-          final bool isFacial = type == PoseLandmarkType.nose ||
-              type == PoseLandmarkType.leftEye ||
-              type == PoseLandmarkType.rightEye ||
-              type == PoseLandmarkType.leftEar ||
-              type == PoseLandmarkType.rightEar;
-
-          canvas.drawCircle(
-            offset,
-            isFacial ? 4.0 : 6.0,
-            isFacial ? headPointPaint : landmarkPaint,
-          );
+      // Draw Landmark Dots
+      pose.landmarks.forEach((_, landmark) {
+        if (landmark.likelihood > 0.15) {
+          final point = _translateXy(landmark.x, landmark.y, size, scaleX, scaleY);
+          canvas.drawCircle(point, 5.0, _jointDotPaint);
+          canvas.drawCircle(point, 7.0, _jointDotOuterPaint);
         }
       });
     }
   }
 
+  Offset _translateXy(double x, double y, Size canvasSize, double scaleX, double scaleY) {
+    double scaledX = x * scaleX;
+    double scaledY = y * scaleY;
+
+    if (lensDirection == CameraLensDirection.front) {
+      scaledX = canvasSize.width - scaledX;
+    }
+
+    return Offset(scaledX, scaledY);
+  }
+
   @override
   bool shouldRepaint(covariant PoseOverlayPainter oldDelegate) {
-    return oldDelegate.poses.length != poses.length ||
-        oldDelegate.imageSize != imageSize ||
-        oldDelegate.lensDirection != lensDirection ||
-        (poses.isNotEmpty && oldDelegate.poses.isNotEmpty && oldDelegate.poses.first != poses.first);
+    return oldDelegate.poses != poses ||
+        oldDelegate.previewSize != previewSize ||
+        oldDelegate.lensDirection != lensDirection;
   }
 }

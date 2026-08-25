@@ -1,41 +1,31 @@
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
 class PoseDetectorService {
   late final PoseDetector _poseDetector;
-  bool _isInitialized = false;
+  bool _isClosed = false;
 
-  PoseDetectorService({
-    PoseDetectionMode mode = PoseDetectionMode.single,
-    PoseDetectionModel model = PoseDetectionModel.base,
-  }) {
-    _poseDetector = PoseDetector(
-      options: PoseDetectorOptions(
-        mode: mode,
-        model: model,
-      ),
+  PoseDetectorService() {
+    final options = PoseDetectorOptions(
+      model: PoseDetectionModel.base,
+      mode: PoseDetectionMode.stream,
     );
-    _isInitialized = true;
+    _poseDetector = PoseDetector(options: options);
   }
 
-  /// Process an [InputImage] and return detected poses.
-  Future<List<Pose>> processInputImage(InputImage inputImage) async {
-    if (!_isInitialized) {
-      throw StateError('PoseDetectorService has been closed or not initialized.');
+  Future<List<Pose>> processImage(InputImage inputImage) async {
+    if (_isClosed) return [];
+    try {
+      final poses = await _poseDetector.processImage(inputImage);
+      return poses;
+    } catch (e, stack) {
+      debugPrint('MLKit PoseDetector error: $e\n$stack');
+      return [];
     }
-    return await _poseDetector.processImage(inputImage);
   }
 
-  /// Process a static image file at [imagePath] for static image verification.
-  Future<List<Pose>> processImageFilePath(String imagePath) async {
-    final inputImage = InputImage.fromFilePath(imagePath);
-    return await processInputImage(inputImage);
-  }
-
-  /// Release detector resources.
-  Future<void> close() async {
-    if (_isInitialized) {
-      _isInitialized = false;
-      await _poseDetector.close();
-    }
+  Future<void> dispose() async {
+    _isClosed = true;
+    await _poseDetector.close();
   }
 }

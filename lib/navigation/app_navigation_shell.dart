@@ -1,10 +1,6 @@
 import 'package:flutter/material.dart';
 import '../core/theme/app_theme.dart';
 import '../features/camera/presentation/camera_screen.dart';
-import '../features/pose_library/models/target_pose.dart';
-import '../features/pose_library/presentation/pose_library_screen.dart';
-import '../features/pose_library/services/pose_library_service.dart';
-import '../features/settings/presentation/settings_screen.dart';
 
 class AppNavigationShell extends StatefulWidget {
   const AppNavigationShell({super.key});
@@ -15,43 +11,37 @@ class AppNavigationShell extends StatefulWidget {
 
 class _AppNavigationShellState extends State<AppNavigationShell> {
   int _currentIndex = 0;
-  TargetPose? _selectedTargetPose;
-  final PoseLibraryService _poseLibraryService = PoseLibraryService();
-
-  @override
-  void initState() {
-    super.initState();
-    _initDefaultPose();
-  }
-
-  Future<void> _initDefaultPose() async {
-    final poses = await _poseLibraryService.loadTargetPoses();
-    if (poses.isNotEmpty && mounted) {
-      setState(() {
-        _selectedTargetPose = poses.first;
-      });
-    }
-  }
-
-  void _onPoseSelected(TargetPose pose) {
-    setState(() {
-      _selectedTargetPose = pose;
-      _currentIndex = 0; // Switch to camera screen after selecting pose
-    });
-  }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
-      CameraScreen(
-        selectedTargetPose: _selectedTargetPose,
-        onSelectPose: _onPoseSelected,
+      const CameraScreen(),
+      const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.grid_view_outlined, size: 64, color: AppTheme.accentViolet),
+            SizedBox(height: 16),
+            Text(
+              'Pose Library Baseline (Phase 3 Ready)',
+              style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
       ),
-      PoseLibraryScreen(
-        selectedPose: _selectedTargetPose,
-        onSelectPose: _onPoseSelected,
+      const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.settings_outlined, size: 64, color: AppTheme.successGreen),
+            SizedBox(height: 16),
+            Text(
+              'Settings Shell',
+              style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
       ),
-      const SettingsScreen(),
     ];
 
     return Scaffold(
@@ -70,7 +60,7 @@ class _AppNavigationShellState extends State<AppNavigationShell> {
           BottomNavigationBarItem(
             icon: Icon(Icons.camera_alt_outlined),
             activeIcon: Icon(Icons.camera_alt, color: AppTheme.primaryCyan),
-            label: 'Camera Shell',
+            label: 'Camera',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.grid_view_outlined),
