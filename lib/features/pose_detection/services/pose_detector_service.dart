@@ -5,10 +5,13 @@ class PoseDetectorService {
   late final PoseDetector _poseDetector;
   bool _isClosed = false;
 
-  PoseDetectorService() {
+  PoseDetectorService({
+    PoseDetectionModel model = PoseDetectionModel.accurate,
+    PoseDetectionMode mode = PoseDetectionMode.single,
+  }) {
     final options = PoseDetectorOptions(
-      model: PoseDetectionModel.base,
-      mode: PoseDetectionMode.stream,
+      model: model,
+      mode: mode,
     );
     _poseDetector = PoseDetector(options: options);
   }

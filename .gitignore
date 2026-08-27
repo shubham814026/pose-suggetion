@@ -9,6 +9,7 @@
 .history
 .svn/
 migrated
+dataset_raw/
 
 # IntelliJ-based IDEs
 .idea/

@@ -1,14 +1,17 @@
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:provider/provider.dart';
 import '../../../../core/theme/app_theme.dart';
-import '../../pose_detection/presentation/widgets/pose_overlay_painter.dart';
-import '../../pose_detection/services/pose_detector_service.dart';
-import '../../pose_detection/utils/camera_image_converter.dart';
+import '../../photo_analysis/presentation/photo_analysis_screen.dart';
+import '../../photo_analysis/services/photo_context_analyzer.dart';
+import '../../pose_library/presentation/widgets/target_pose_stencil_painter.dart';
+import '../../pose_library/services/pose_library_service.dart';
 import 'widgets/permission_denied_view.dart';
 
+/// Clean, high-performance Camera Viewfinder.
+/// Captures photo snapshots for multi-modal scene, lighting, and context pose suggestions.
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
 
@@ -22,30 +25,23 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   int _selectedCameraIndex = 0;
   bool _isPermissionGranted = false;
   bool _isInitializing = true;
-  bool _isCapturing = false;
+  bool _isAnalyzingPhoto = false;
   String? _errorMessage;
   XFile? _lastCapturedPhoto;
 
-  // ML Kit Pose Detection & Stream Throttle Latch
-  late final PoseDetectorService _poseDetectorService;
-  List<Pose> _detectedPoses = [];
-  bool _isProcessingFrame = false;
-  int _lastFrameTimestamp = 0;
+  final PhotoContextAnalyzer _photoContextAnalyzer = PhotoContextAnalyzer();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _poseDetectorService = PoseDetectorService();
     _checkPermissionAndInit();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _stopImageStream();
     _controller?.dispose();
-    _poseDetectorService.dispose();
     super.dispose();
   }
 
@@ -56,7 +52,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       return;
     }
     if (state == AppLifecycleState.inactive) {
-      _stopImageStream();
       cameraController.dispose();
     } else if (state == AppLifecycleState.resumed) {
       _initCamera(_selectedCameraIndex);
@@ -88,12 +83,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         });
         return;
       }
-      
+
       int defaultIndex = _availableCameras.indexWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.front,
+        (cam) => cam.lensDirection == CameraLensDirection.back,
       );
       if (defaultIndex == -1) defaultIndex = 0;
-      
+
       await _initCamera(defaultIndex);
     } catch (e) {
       setState(() {
@@ -112,16 +107,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     });
 
     final previousController = _controller;
-    await _stopImageStream();
-
     final camera = _availableCameras[cameraIndex];
 
-    // Use ResolutionPreset.medium (720p) for 3x faster ML Kit frame processing & lower memory bandwidth
     final controller = CameraController(
       camera,
-      ResolutionPreset.medium,
+      ResolutionPreset.high,
       enableAudio: false,
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
 
     await previousController?.dispose();
@@ -129,80 +120,18 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     try {
       await controller.initialize();
       if (!mounted) return;
-      
+
       setState(() {
         _controller = controller;
         _selectedCameraIndex = cameraIndex;
         _isInitializing = false;
       });
-
-      _startImageStream();
     } on CameraException catch (e) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = 'Camera hardware error: ${e.description} (Code: ${e.code})';
+        _errorMessage = 'Camera error: ${e.description}';
         _isInitializing = false;
       });
-    }
-  }
-
-  void _startImageStream() {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
-
-    try {
-      controller.startImageStream(_processCameraFrame);
-    } catch (e) {
-      // Ignore if stream already active
-    }
-  }
-
-  Future<void> _stopImageStream() async {
-    final controller = _controller;
-    if (controller != null && controller.value.isStreamingImages) {
-      try {
-        await controller.stopImageStream();
-      } catch (e) {
-        // Stream stopped
-      }
-    }
-  }
-
-  void _processCameraFrame(CameraImage image) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    // Ultra-Fast 60ms Stream Throttle Latch (up to 16-20 FPS)
-    if (_isProcessingFrame || (now - _lastFrameTimestamp < 60)) {
-      return;
-    }
-
-    _isProcessingFrame = true;
-    _lastFrameTimestamp = now;
-
-    try {
-      final camera = _availableCameras[_selectedCameraIndex];
-      final inputImage = CameraImageConverter.inputImageFromCameraImage(
-        image: image,
-        camera: camera,
-      );
-
-      if (inputImage != null) {
-        final poses = await _poseDetectorService.processImage(inputImage);
-        if (poses.isNotEmpty) {
-          debugPrint('[POSE ENGINE] Success: ${poses.length} pose(s) detected with ${poses.first.landmarks.length} landmarks');
-        }
-        if (mounted) {
-          setState(() {
-            _detectedPoses = poses;
-          });
-        }
-      } else {
-        debugPrint('[POSE ENGINE] Warning: inputImage conversion returned null');
-      }
-    } catch (e, stack) {
-      debugPrint('[POSE ENGINE] Error processing frame: $e\n$stack');
-    } finally {
-      _isProcessingFrame = false;
     }
   }
 
@@ -212,117 +141,71 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     await _initCamera(newIndex);
   }
 
-  Future<void> _takePhoto() async {
+  /// Snaps a photo from the camera and triggers the deep multi-modal analysis flow
+  Future<void> _captureAndAnalyzePhoto() async {
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized || _isCapturing) {
+    if (controller == null || !controller.value.isInitialized || _isAnalyzingPhoto) {
       return;
     }
 
     setState(() {
-      _isCapturing = true;
+      _isAnalyzingPhoto = true;
     });
 
     try {
-      await _stopImageStream();
       final photo = await controller.takePicture();
-      _startImageStream();
+      _lastCapturedPhoto = photo;
 
       if (!mounted) return;
-
-      setState(() {
-        _lastCapturedPhoto = photo;
-        _isCapturing = false;
-      });
-
-      _showPhotoCapturedBottomSheet(photo);
+      await _runAnalysisAndOpenScreen(photo.path);
     } catch (e) {
-      _startImageStream();
-      if (!mounted) return;
-      setState(() {
-        _isCapturing = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to capture photo: $e'),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to capture photo: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAnalyzingPhoto = false;
+        });
+      }
     }
   }
 
-  void _showPhotoCapturedBottomSheet(XFile photo) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.surfaceColor,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppTheme.textSecondary.withAlpha(102),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Row(
-                children: [
-                  Icon(Icons.check_circle_outline, color: AppTheme.successGreen, size: 24),
-                  SizedBox(width: 10),
-                  Text(
-                    'Photo Captured',
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: SizedBox(
-                  height: 200,
-                  width: double.infinity,
-                  child: Image.file(
-                    File(photo.path),
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Saved to local cache: ${photo.path.split('/').last}',
-                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryCyan,
-                  foregroundColor: Colors.black,
-                  minimumSize: const Size.fromHeight(48),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: const Text('Continue', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ],
+  Future<void> _runAnalysisAndOpenScreen(String imagePath) async {
+    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+    final isFrontCamera = _availableCameras.isNotEmpty &&
+        _availableCameras[_selectedCameraIndex].lensDirection == CameraLensDirection.front;
+
+    try {
+      final result = await _photoContextAnalyzer.analyzePhoto(
+        imagePath: imagePath,
+        poseLibrary: poseLibrary,
+        isFrontCamera: isFrontCamera,
+      );
+
+      if (!mounted) return;
+
+      // Navigate to Photo Analysis & Recommendation Screen
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (context) => PhotoAnalysisScreen(analysis: result),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Analysis failed: $e'),
+            backgroundColor: Colors.redAccent,
           ),
         );
-      },
-    );
+      }
+    }
   }
 
   @override
@@ -335,12 +218,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     final controller = _controller;
     final isInitialized = controller != null && controller.value.isInitialized;
+    final poseLibrary = Provider.of<PoseLibraryService>(context);
 
-    Size previewSize = Size.zero;
-    if (isInitialized) {
-      final size = controller.value.previewSize!;
-      previewSize = Size(size.height, size.width);
-    }
+    final isFrontCamera = _availableCameras.isNotEmpty &&
+        _availableCameras[_selectedCameraIndex].lensDirection == CameraLensDirection.front;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -348,7 +229,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // 1. Live Camera Preview Viewport
+            // 1. Live Camera Viewfinder
             if (isInitialized)
               Center(
                 child: CameraPreview(controller),
@@ -361,69 +242,137 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     CircularProgressIndicator(color: AppTheme.primaryCyan),
                     SizedBox(height: 16),
                     Text(
-                      'Initializing Camera & AI Engine...',
+                      'Initializing Camera...',
                       style: TextStyle(color: AppTheme.textPrimary, fontSize: 14),
                     ),
                   ],
                 ),
               ),
 
-            // 2. Real-Time ML Kit Skeleton Overlay Layer
-            if (isInitialized)
+            // 2. Active Target Pose Silhouette Stencil Overlay (When a pose is selected)
+            if (isInitialized && poseLibrary.activeTargetPose != null)
               CustomPaint(
-                painter: PoseOverlayPainter(
-                  poses: _detectedPoses,
-                  previewSize: previewSize,
-                  lensDirection: _availableCameras[_selectedCameraIndex].lensDirection,
+                painter: TargetPoseStencilPainter(
+                  targetPose: poseLibrary.activeTargetPose,
+                  isFrontCamera: isFrontCamera,
+                  showSilhouette: true,
+                  showActionTags: true,
                 ),
               ),
 
-            // 3. Pose Detection Status HUD (Top Left)
+            // 3. Top Header Bar: Camera Switcher, Active Pose HUD Badge
             if (isInitialized)
               Positioned(
                 top: 16,
                 left: 16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(166),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: _detectedPoses.isNotEmpty ? AppTheme.successGreen : AppTheme.warningAmber,
-                      width: 1.5,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+                right: 16,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Active Stencil Indicator + Remove Button
+                    if (poseLibrary.activeTargetPose != null)
+                      Flexible(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withAlpha(210),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: AppTheme.primaryCyan.withAlpha(200)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.accessibility_new, color: AppTheme.primaryCyan, size: 16),
+                                    const SizedBox(width: 6),
+                                    Flexible(
+                                      child: Text(
+                                        poseLibrary.activeTargetPose!.name,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            InkWell(
+                              onTap: () => poseLibrary.clearActivePose(),
+                              borderRadius: BorderRadius.circular(20),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEF4444).withAlpha(220),
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black45, blurRadius: 4),
+                                  ],
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.close_rounded, color: Colors.white, size: 14),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Remove',
+                                      style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
                       Container(
-                        width: 8,
-                        height: 8,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _detectedPoses.isNotEmpty ? AppTheme.successGreen : AppTheme.warningAmber,
+                          color: Colors.black.withAlpha(160),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.auto_awesome, color: AppTheme.primaryCyan, size: 14),
+                            SizedBox(width: 6),
+                            Text(
+                              'Snap Photo for AI Scene Poses',
+                              style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _detectedPoses.isNotEmpty
-                            ? 'Pose Tracking Active (${_detectedPoses.first.landmarks.length} pts)'
-                            : 'Searching for Person...',
-                        style: const TextStyle(
-                          color: AppTheme.textPrimary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
+
+                    // Lens Switcher Button
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(150),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white24),
                       ),
-                    ],
-                  ),
+                      child: IconButton(
+                        icon: const Icon(Icons.flip_camera_ios, color: Colors.white, size: 20),
+                        onPressed: _availableCameras.length > 1 ? _toggleCameraLens : null,
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
-            // 4. Hardware Error Banner
+            // Hardware Error Banner
             if (_errorMessage != null)
               Positioned(
-                top: 16,
+                top: 70,
                 left: 16,
                 right: 16,
                 child: Container(
@@ -451,25 +400,36 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 ),
               ),
 
-            // 5. Top Right Lens Switcher
-            if (isInitialized)
-              Positioned(
-                top: 16,
-                right: 16,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(128),
-                    shape: BoxShape.circle,
-                  ),
-                  child: IconButton(
-                    icon: const Icon(Icons.flip_camera_ios, color: AppTheme.textPrimary),
-                    onPressed: _availableCameras.length > 1 ? _toggleCameraLens : null,
+            // 4. Loading Analysis Overlay
+            if (_isAnalyzingPhoto)
+              Container(
+                color: Colors.black87,
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(color: AppTheme.primaryCyan, strokeWidth: 3),
+                      SizedBox(height: 16),
+                      Text(
+                        '✨ Analyzing Scene, Lighting & Context...',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 6),
+                      Text(
+                        'Extracting atmosphere, sunset/daylight & people count',
+                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                      ),
+                    ],
                   ),
                 ),
               ),
 
-            // 6. Bottom Controls (Shutter Button & Thumbnail)
-            if (isInitialized)
+            // 5. Bottom Control Deck (Capture Shutter, Last Photo Quick Re-Analyze)
+            if (isInitialized && !_isAnalyzingPhoto)
               Positioned(
                 bottom: 24,
                 left: 0,
@@ -477,20 +437,70 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    // Last photo thumbnail preview
+                    // Flip camera lens or quick action
+                    GestureDetector(
+                      onTap: _availableCameras.length > 1 ? _toggleCameraLens : null,
+                      child: Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E293B),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
+                        ),
+                        child: const Icon(Icons.cameraswitch_outlined, color: Colors.white, size: 24),
+                      ),
+                    ),
+
+                    // Main Snapshot & Scene Analysis Shutter Button
+                    GestureDetector(
+                      onTap: _captureAndAnalyzePhoto,
+                      child: Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppTheme.primaryCyan, width: 4),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppTheme.primaryCyan.withAlpha(80),
+                              blurRadius: 12,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                        child: Center(
+                          child: Container(
+                            width: 60,
+                            height: 60,
+                            decoration: const BoxDecoration(
+                              color: AppTheme.primaryCyan,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Center(
+                              child: Icon(Icons.camera_alt, color: Colors.black, size: 28),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Last Photo Preview / Quick Re-Open Analysis
                     GestureDetector(
                       onTap: () {
                         if (_lastCapturedPhoto != null) {
-                          _showPhotoCapturedBottomSheet(_lastCapturedPhoto!);
+                          _runAnalysisAndOpenScreen(_lastCapturedPhoto!.path);
+                        } else {
+                          _captureAndAnalyzePhoto();
                         }
                       },
                       child: Container(
-                        width: 48,
-                        height: 48,
+                        width: 52,
+                        height: 52,
                         decoration: BoxDecoration(
-                          color: AppTheme.surfaceColor,
+                          color: const Color(0xFF1E293B),
                           shape: BoxShape.circle,
-                          border: Border.all(color: AppTheme.primaryCyan, width: 2),
+                          border: Border.all(color: AppTheme.primaryCyan, width: 1.5),
                         ),
                         child: _lastCapturedPhoto != null
                             ? ClipOval(
@@ -499,41 +509,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                                   fit: BoxFit.cover,
                                 ),
                               )
-                            : const Icon(Icons.image_outlined, color: AppTheme.textSecondary),
+                            : const Icon(Icons.auto_awesome, color: AppTheme.primaryCyan, size: 22),
                       ),
                     ),
-
-                    // Shutter button
-                    GestureDetector(
-                      onTap: _isCapturing ? null : _takePhoto,
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(color: AppTheme.primaryCyan, width: 4),
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: 56,
-                            height: 56,
-                            decoration: BoxDecoration(
-                              color: _isCapturing ? AppTheme.warningAmber : AppTheme.primaryCyan,
-                              shape: BoxShape.circle,
-                            ),
-                            child: _isCapturing
-                                ? const Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3),
-                                  )
-                                : null,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    // Spacing balance
-                    const SizedBox(width: 48),
                   ],
                 ),
               ),
