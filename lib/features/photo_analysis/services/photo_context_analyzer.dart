@@ -43,6 +43,11 @@ class PhotoContextAnalyzer {
       await _recommender.initialize();
     }
 
+    // Guarantee reference pose database is loaded into memory
+    if (poseLibrary.allPoses.isEmpty) {
+      await poseLibrary.loadPoseLibrary();
+    }
+
     // 1. Analyze Visual Lighting & Time of Day / Environment Colors
     final visualMetrics = _analyzeVisualColors(imageBytes);
 
@@ -78,14 +83,31 @@ class PhotoContextAnalyzer {
       isFrontCamera: isFrontCamera,
     );
 
-    // 7. Dynamically Synthesize 5 Diverse Contextual AI Poses via Neural Forward Inference
-    final List<TargetPose> dynamicAIPoses = _recommender.generateDynamicPoseRecommendations(
-      baseContextVector: contextVector,
-      sceneName: scene.$2,
-      lightingName: lighting.$2,
+    // 7. Execute On-Device Neural Model (ContextPoseRecommenderNet) to predict & rank Top 3 photos
+    final candidatePoses = poseLibrary.allPoses.isNotEmpty
+        ? poseLibrary.allPoses
+        : poseLibrary.filteredPoses;
+
+    final neuralResult = _recommender.runNeuralRecommendationInference(
+      contextVector: contextVector,
+      candidatePoses: candidatePoses,
       peopleCount: peopleCount,
-      count: 5,
+      detectedStance: stanceType,
+      topK: 3,
     );
+
+    List<TargetPose> suggestedPhotos = neuralResult.recommendedPoses;
+
+    // Fallback if candidate poses are empty
+    if (suggestedPhotos.isEmpty) {
+      suggestedPhotos = _recommender.generateDynamicPoseRecommendations(
+        baseContextVector: contextVector,
+        sceneName: scene.$2,
+        lightingName: lighting.$2,
+        peopleCount: peopleCount,
+        count: 3,
+      );
+    }
 
     return PhotoAnalysisResult(
       imagePath: imagePath,
@@ -101,10 +123,14 @@ class PhotoContextAnalyzer {
       detectedPoses: detectedPoses,
       contextVector: contextVector,
       sceneVector: sceneVector,
-      aiSynthesizedPose: dynamicAIPoses.isNotEmpty ? dynamicAIPoses.first : null,
-      recommendedPoses: dynamicAIPoses,
+      aiSynthesizedPose: suggestedPhotos.isNotEmpty ? suggestedPhotos.first : null,
+      recommendedPoses: suggestedPhotos,
       averageLuminance: visualMetrics.avgLuminance,
       colorTemperatureK: visualMetrics.estimatedKelvin,
+      predictedCategory: neuralResult.predictedCategory,
+      categoryProbability: neuralResult.categoryProbability,
+      neuralConfidenceScore: neuralResult.confidenceScore,
+      inferenceTimeMs: neuralResult.inferenceTimeMs,
     );
   }
 

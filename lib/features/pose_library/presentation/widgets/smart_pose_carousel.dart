@@ -5,7 +5,7 @@ import '../../data/models/target_pose.dart';
 import '../../services/pose_library_service.dart';
 import '../../../pose_recommendation/services/context_frame_scheduler.dart';
 import '../../../pose_recommendation/services/pose_recommendation_service.dart';
-import 'mini_silhouette_painter.dart';
+import 'pose_image_view.dart';
 import 'pose_thumbnail_card.dart';
 
 /// Interactive horizontal recommendation carousel tray (Huawei AI Camera style).
@@ -48,38 +48,6 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
     );
   }
 
-  /// Triggers real-time on-device dynamic pose generation via ContextPoseNet
-  void _generateAndApplyAIPose(
-    BuildContext context,
-    PoseLibraryService poseLibrary,
-    PoseRecommendationService recommender,
-    ContextFrameScheduler? scheduler,
-  ) {
-    final contextVector = scheduler?.currentContextVector ??
-        recommender.buildContextVector(
-          sceneVector: widget.currentSceneVector ?? List.filled(64, 0.15),
-          propIndex: scheduler?.detectedPropIndex ?? 0,
-          peopleCount: scheduler?.detectedPeopleCount ?? 1,
-          isFrontCamera: scheduler?.isFrontCamera ?? true,
-        );
-
-    final generatedPose = recommender.generatePoseFromContext(contextVector);
-    if (generatedPose != null) {
-      poseLibrary.setCustomActivePose(generatedPose);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-            '✨ Synthesized new AI Context Pose from live camera!',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          duration: const Duration(milliseconds: 1000),
-          backgroundColor: AppTheme.primaryCyan.withAlpha(220),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
   /// Opens full-screen bottom sheet gallery to browse all library poses
   void _openFullPoseGallery(BuildContext context, PoseLibraryService poseLibrary) {
     showModalBottomSheet(
@@ -114,10 +82,10 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        'Pose Library (${poses.length} Poses)',
+                        'Browse Reference Photos (${poses.length} Photos)',
                         style: const TextStyle(
                           color: AppTheme.textPrimary,
-                          fontSize: 18,
+                          fontSize: 16,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -137,7 +105,7 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
                       crossAxisCount: 3,
                       mainAxisSpacing: 12,
                       crossAxisSpacing: 12,
-                      childAspectRatio: 0.85,
+                      childAspectRatio: 0.75,
                     ),
                     itemCount: poses.length,
                     itemBuilder: (context, index) {
@@ -146,8 +114,19 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
 
                       return GestureDetector(
                         onTap: () {
-                          poseLibrary.selectPoseById(pose.id);
+                          poseLibrary.setCustomActivePose(pose);
                           Navigator.of(context).pop();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                '✨ Reference photo set: "${pose.name}"',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              backgroundColor: AppTheme.primaryCyan.withAlpha(220),
+                              duration: const Duration(milliseconds: 1000),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
                         },
                         child: Container(
                           decoration: BoxDecoration(
@@ -158,33 +137,60 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
                               width: isSelected ? 2.0 : 1.0,
                             ),
                           ),
-                          padding: const EdgeInsets.all(8),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Expanded(
-                                child: CustomPaint(
-                                  size: const Size(double.infinity, double.infinity),
-                                  painter: MiniSilhouettePainter(
-                                    pose: pose,
-                                    isSelected: isSelected,
-                                    accentColor: AppTheme.primaryCyan,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(11),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                PoseImageView(
+                                  pose: pose,
+                                  fit: BoxFit.cover,
+                                ),
+                                Container(
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [
+                                        Colors.transparent,
+                                        Colors.black54,
+                                        Colors.black87,
+                                      ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                pose.name,
-                                style: TextStyle(
-                                  color: isSelected ? AppTheme.primaryCyan : Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                Positioned(
+                                  bottom: 6,
+                                  left: 6,
+                                  right: 6,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        pose.name,
+                                        style: TextStyle(
+                                          color: isSelected ? AppTheme.primaryCyan : Colors.white,
+                                          fontSize: 9.5,
+                                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      Text(
+                                        pose.category,
+                                        style: const TextStyle(
+                                          color: AppTheme.textSecondary,
+                                          fontSize: 7.5,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       );
@@ -214,135 +220,179 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
 
     final sceneVector = widget.currentSceneVector ??
         scheduler?.sceneVector ??
-        List.generate(64, (i) => (i % 2 == 0) ? 0.15 : -0.10);
+        List.filled(64, 0.0);
 
-    final int peopleCount = scheduler?.detectedPeopleCount ?? 1;
-    final bool isSitting = scheduler?.currentStance == StanceType.sitting;
+    final int peopleCount = scheduler?.detectedPeopleCount ?? 0;
+    final StanceType stance = scheduler?.currentStance ?? StanceType.standing;
 
-    // Dynamically retrieve top 5 matching recommendations based on live background & people count
-    final List<TargetPose> topRecommendations = recommender.getTopRecommendations(
-      allPoses: poseLibrary.allPoses.isNotEmpty ? poseLibrary.allPoses : poseLibrary.filteredPoses,
-      sceneVector: sceneVector,
+    final candidatePoses = poseLibrary.allPoses.isNotEmpty
+        ? poseLibrary.allPoses
+        : poseLibrary.filteredPoses;
+
+    final contextVector = scheduler?.currentContextVector ??
+        recommender.buildContextVector(
+          sceneVector: sceneVector,
+          peopleCount: peopleCount > 0 ? peopleCount : 1,
+          isFrontCamera: scheduler?.isFrontCamera ?? true,
+        );
+
+    final neuralResult = recommender.runNeuralRecommendationInference(
+      contextVector: contextVector,
+      candidatePoses: candidatePoses,
       peopleCount: peopleCount,
-      isSitting: isSitting,
-      topK: 5,
+      detectedStance: stance,
+      topK: 3,
     );
 
-    return SizedBox(
-      height: 84,
-      child: Row(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              // Card 0: AI Neural Generator, Cards 1..5: Top 5 Dynamic Recommendations
-              itemCount: topRecommendations.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  // Special Card: Real-Time AI Neural Generator
-                  final isAIPoseActive = poseLibrary.activeTargetPose?.id.startsWith('pose_ai_generated') ?? false;
-                  return GestureDetector(
-                    onTap: () => _generateAndApplyAIPose(context, poseLibrary, recommender, scheduler),
-                    child: Container(
-                      width: 82,
-                      margin: const EdgeInsets.only(right: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: isAIPoseActive
-                              ? [const Color(0xFF0284C7), const Color(0xFF0EA5E9)]
-                              : [const Color(0xCC0F172A), const Color(0xCC1E293B)],
-                        ),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: isAIPoseActive ? Colors.white : AppTheme.primaryCyan.withAlpha(180),
-                          width: 2.0,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppTheme.primaryCyan.withAlpha(isAIPoseActive ? 120 : 40),
-                            blurRadius: 8,
-                            spreadRadius: 1,
-                          ),
-                        ],
-                      ),
-                      child: const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.auto_awesome, color: Colors.white, size: 16),
-                          SizedBox(height: 2),
-                          Text(
-                            'AI Neural',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 9.0,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            '✨ Generate',
-                            style: TextStyle(
-                              color: AppTheme.primaryCyan,
-                              fontSize: 7.5,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }
+    List<TargetPose> topRecommendations = List.from(neuralResult.recommendedPoses);
 
-                final TargetPose pose = topRecommendations[index - 1];
-                final bool isSelected = poseLibrary.activeTargetPose?.id == pose.id;
-                final int matchScore = recommender.getMatchPercentage(sceneVector, pose).toInt();
+    // If candidate library poses are still loading or empty, dynamically synthesize 3 neural recommendations
+    if (topRecommendations.isEmpty) {
+      topRecommendations = recommender.generateDynamicPoseRecommendations(
+        baseContextVector: contextVector,
+        sceneName: 'Studio & Photography',
+        lightingName: 'Natural Daylight',
+        peopleCount: peopleCount > 0 ? peopleCount : 1,
+        count: 3,
+      );
+    }
 
-                return PoseThumbnailCard(
-                  pose: pose,
-                  isSelected: isSelected,
-                  matchScore: matchScore,
-                  onTap: () {
-                    poseLibrary.setCustomActivePose(pose);
-                    _scrollToIndex(index, topRecommendations.length + 1);
-                  },
-                );
-              },
-            ),
-          ),
+    // Ensure the currently active pose is present in the carousel so user can see it selected
+    final activePose = poseLibrary.activeTargetPose;
+    if (activePose != null && !topRecommendations.any((p) => p.id == activePose.id)) {
+      topRecommendations.insert(0, activePose);
+    }
 
-          // Gallery Grid View Trigger Button
-          GestureDetector(
-            onTap: () => _openFullPoseGallery(context, poseLibrary),
-            child: Container(
-              height: 72,
-              width: 36,
-              margin: const EdgeInsets.only(right: 8),
-              decoration: BoxDecoration(
-                color: Colors.black.withAlpha(180),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white24),
+    // Auto-select top recommendation if none selected and not explicitly cleared by user
+    if (poseLibrary.activeTargetPose == null &&
+        !poseLibrary.userExplicitlyCleared &&
+        topRecommendations.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && poseLibrary.activeTargetPose == null && !poseLibrary.userExplicitlyCleared) {
+          poseLibrary.autoSelectRecommendedPose(topRecommendations.first);
+        }
+      });
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Live Neural Recommender & Person Detection Status Badge
+        Padding(
+          padding: const EdgeInsets.only(left: 12, bottom: 6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3.5),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A).withAlpha(230),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: peopleCount > 0
+                    ? AppTheme.primaryCyan.withAlpha(200)
+                    : Colors.white24,
+                width: 1.0,
               ),
-              child: const Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.grid_view_rounded, color: Colors.white, size: 16),
-                  SizedBox(height: 2),
-                  Text(
-                    'All',
-                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 8.0),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withAlpha(140),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  peopleCount == 0
+                      ? Icons.person_outline
+                      : (peopleCount == 1 ? Icons.person : Icons.group),
+                  color: peopleCount > 0 ? AppTheme.primaryCyan : Colors.white70,
+                  size: 13,
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  peopleCount == 0
+                      ? 'Point camera at person • ML ready'
+                      : '${peopleCount == 1 ? "1 Person" : "$peopleCount People"} • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)',
+                  style: TextStyle(
+                    color: peopleCount > 0 ? Colors.white : Colors.white70,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+
+        SizedBox(
+          height: 112,
+          child: Row(
+            children: [
+              Expanded(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  itemCount: topRecommendations.length,
+                  itemBuilder: (context, index) {
+                    final TargetPose pose = topRecommendations[index];
+                    final bool isSelected = poseLibrary.activeTargetPose?.id == pose.id;
+                    final int matchScore = recommender.calculateDynamicMatchPercentage(
+                      sceneVector: sceneVector,
+                      pose: pose,
+                      peopleCount: peopleCount,
+                      detectedStance: stance,
+                    ).round();
+
+                    return PoseThumbnailCard(
+                      pose: pose,
+                      isSelected: isSelected,
+                      matchScore: matchScore,
+                      onTap: () {
+                        poseLibrary.setCustomActivePose(pose);
+                        _scrollToIndex(index, topRecommendations.length);
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              // Gallery Grid View Trigger Button
+              GestureDetector(
+                onTap: () => _openFullPoseGallery(context, poseLibrary),
+                child: Container(
+                  height: 104,
+                  width: 40,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(200),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: const Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.photo_library_outlined, color: AppTheme.primaryCyan, size: 18),
+                      SizedBox(height: 4),
+                      Text(
+                        '12k',
+                        style: TextStyle(color: Colors.white, fontSize: 9.0, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        'Poses',
+                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 8.0),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

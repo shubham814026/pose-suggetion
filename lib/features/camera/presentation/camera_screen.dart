@@ -1,19 +1,32 @@
 import 'dart:io';
+import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../photo_analysis/presentation/photo_analysis_screen.dart';
 import '../../photo_analysis/services/photo_context_analyzer.dart';
-import '../../pose_library/presentation/widgets/target_pose_stencil_painter.dart';
+import '../../pose_detection/services/pose_detector_service.dart';
+import '../../pose_detection/utils/camera_image_converter.dart';
+import '../../pose_library/data/models/target_pose.dart';
+import '../../pose_library/presentation/widgets/pose_image_view.dart';
+import '../../pose_library/presentation/widgets/smart_pose_carousel.dart';
 import '../../pose_library/services/pose_library_service.dart';
+import '../../pose_recommendation/services/context_frame_scheduler.dart';
+import '../../pose_recommendation/services/pose_recommendation_service.dart';
 import 'widgets/permission_denied_view.dart';
 
 /// Clean, high-performance Camera Viewfinder.
 /// Captures photo snapshots for multi-modal scene, lighting, and context pose suggestions.
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+  final bool? isPermissionGrantedForTesting;
+
+  const CameraScreen({
+    super.key,
+    this.isPermissionGrantedForTesting,
+  });
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -30,17 +43,65 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   XFile? _lastCapturedPhoto;
 
   final PhotoContextAnalyzer _photoContextAnalyzer = PhotoContextAnalyzer();
+  late final PoseDetectorService _livePoseDetector;
+  bool _isProcessingFrame = false;
+  int _lastFrameProcessTimestamp = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _checkPermissionAndInit();
+    _livePoseDetector = PoseDetectorService(
+      model: PoseDetectionModel.base,
+      mode: PoseDetectionMode.stream,
+    );
+    if (widget.isPermissionGrantedForTesting == true) {
+      _isPermissionGranted = true;
+      _isInitializing = false;
+    } else {
+      _checkPermissionAndInit();
+    }
+    _autoSelectInitialRecommendedPose();
+  }
+
+  void _autoSelectInitialRecommendedPose() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+      final recommender = Provider.of<PoseRecommendationService>(context, listen: false);
+      ContextFrameScheduler? scheduler;
+      try {
+        scheduler = Provider.of<ContextFrameScheduler>(context, listen: false);
+      } catch (_) {}
+
+      if (poseLibrary.activeTargetPose == null && !poseLibrary.userExplicitlyCleared) {
+        if (poseLibrary.allPoses.isNotEmpty) {
+          final contextVector = scheduler?.currentContextVector ??
+              recommender.buildContextVector(
+                sceneVector: scheduler?.sceneVector ?? List.filled(64, 0.0),
+                peopleCount: scheduler?.detectedPeopleCount ?? 1,
+              );
+          final result = recommender.runNeuralRecommendationInference(
+            contextVector: contextVector,
+            candidatePoses: poseLibrary.allPoses,
+            peopleCount: scheduler?.detectedPeopleCount ?? 1,
+            detectedStance: scheduler?.currentStance ?? StanceType.standing,
+            topK: 1,
+          );
+          if (result.recommendedPoses.isNotEmpty) {
+            poseLibrary.autoSelectRecommendedPose(result.recommendedPoses.first);
+            return;
+          }
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _stopLiveStream();
+    _livePoseDetector.dispose();
     _controller?.dispose();
     super.dispose();
   }
@@ -52,6 +113,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       return;
     }
     if (state == AppLifecycleState.inactive) {
+      _stopLiveStream();
       cameraController.dispose();
     } else if (state == AppLifecycleState.resumed) {
       _initCamera(_selectedCameraIndex);
@@ -113,8 +175,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       camera,
       ResolutionPreset.high,
       enableAudio: false,
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
     );
 
+    await _stopLiveStream();
     await previousController?.dispose();
 
     try {
@@ -126,6 +190,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         _selectedCameraIndex = cameraIndex;
         _isInitializing = false;
       });
+
+      // Start real-time live ML frame analysis stream
+      await _startLiveStream(controller, camera);
     } on CameraException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -135,8 +202,131 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _startLiveStream(CameraController controller, CameraDescription camera) async {
+    if (!controller.value.isInitialized || controller.value.isStreamingImages) return;
+    final bool isFront = camera.lensDirection == CameraLensDirection.front;
+    try {
+      await controller.startImageStream((CameraImage image) {
+        _processLiveCameraFrame(image, camera, isFront);
+      });
+    } catch (e) {
+      debugPrint('Error starting live camera stream: $e');
+    }
+  }
+
+  Future<void> _stopLiveStream() async {
+    final controller = _controller;
+    if (controller != null && controller.value.isInitialized && controller.value.isStreamingImages) {
+      try {
+        await controller.stopImageStream();
+      } catch (e) {
+        debugPrint('Error stopping camera image stream: $e');
+      }
+    }
+  }
+
+  void _processLiveCameraFrame(CameraImage image, CameraDescription camera, bool isFront) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Throttle to ~250ms (4 FPS) to ensure viewfinder stays 60 FPS smooth
+    if (now - _lastFrameProcessTimestamp < 250) return;
+    if (_isProcessingFrame || _isAnalyzingPhoto || !mounted) return;
+    _isProcessingFrame = true;
+    _lastFrameProcessTimestamp = now;
+
+    try {
+      final inputImage = CameraImageConverter.inputImageFromCameraImage(
+        image: image,
+        camera: camera,
+      );
+
+      List<Pose> poses = [];
+      if (inputImage != null) {
+        poses = await _livePoseDetector.processImage(inputImage);
+      }
+
+      // Extract real-time 64-d scene luminance / color vector directly from camera stream
+      final liveSceneVector = _extractLiveSceneVector(image);
+
+      if (!mounted) return;
+      ContextFrameScheduler? scheduler;
+      try {
+        scheduler = Provider.of<ContextFrameScheduler>(context, listen: false);
+      } catch (_) {}
+
+      if (scheduler != null) {
+        scheduler.onFramePoses(poses, isFrontCamera: isFront);
+        scheduler.updateSceneAndProps(sceneVector: liveSceneVector);
+      }
+    } catch (e) {
+      debugPrint('Live frame processing error (non-fatal): $e');
+    } finally {
+      _isProcessingFrame = false;
+    }
+  }
+
+  /// Extracts real-time 64-d scene embedding vector by spatial grid sampling of camera frame
+  List<double> _extractLiveSceneVector(CameraImage image) {
+    final List<double> vector = List.filled(64, 0.0);
+    if (image.planes.isEmpty) return vector;
+
+    try {
+      final plane = image.planes[0];
+      final bytes = plane.bytes;
+      final int bytesPerRow = plane.bytesPerRow;
+      final int width = image.width;
+      final int height = image.height;
+
+      if (width <= 0 || height <= 0 || bytes.isEmpty) return vector;
+
+      double totalLum = 0.0;
+      int sampledCount = 0;
+
+      // Sample an 8x8 spatial grid (64 patches) across the frame
+      for (int gy = 0; gy < 8; gy++) {
+        final int py = ((gy + 0.5) * height / 8.0).toInt().clamp(0, height - 1);
+        final int rowOffset = py * bytesPerRow;
+
+        for (int gx = 0; gx < 8; gx++) {
+          final int px = ((gx + 0.5) * width / 8.0).toInt().clamp(0, width - 1);
+          final int idx = gy * 8 + gx;
+
+          int lumValue = 128;
+          if (Platform.isAndroid) {
+            // Y plane directly represents luminance (0..255)
+            final int byteIdx = rowOffset + px;
+            if (byteIdx < bytes.length) {
+              lumValue = bytes[byteIdx];
+            }
+          } else {
+            // iOS BGRA8888 (4 bytes per pixel: B, G, R, A)
+            final int byteIdx = rowOffset + (px * 4);
+            if (byteIdx + 2 < bytes.length) {
+              final int b = bytes[byteIdx];
+              final int g = bytes[byteIdx + 1];
+              final int r = bytes[byteIdx + 2];
+              lumValue = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
+            }
+          }
+
+          final double normalized = (lumValue / 255.0) - 0.5;
+          vector[idx] = normalized;
+          totalLum += lumValue;
+          sampledCount++;
+        }
+      }
+
+      final double avgLum = sampledCount > 0 ? (totalLum / sampledCount) / 255.0 : 0.5;
+      for (int i = 0; i < 64; i++) {
+        vector[i] = (vector[i] * 1.2 + (avgLum - 0.5) * 0.3).clamp(-1.0, 1.0);
+      }
+    } catch (_) {}
+
+    return vector;
+  }
+
   Future<void> _toggleCameraLens() async {
     if (_availableCameras.length < 2) return;
+    await _stopLiveStream();
     final newIndex = (_selectedCameraIndex + 1) % _availableCameras.length;
     await _initCamera(newIndex);
   }
@@ -153,6 +343,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     });
 
     try {
+      // Android Camera HAL safety: stop image stream before taking still photo
+      await _stopLiveStream();
+
       final photo = await controller.takePicture();
       _lastCapturedPhoto = photo;
 
@@ -172,6 +365,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         setState(() {
           _isAnalyzingPhoto = false;
         });
+        if (_controller != null && _controller!.value.isInitialized && _availableCameras.isNotEmpty) {
+          _startLiveStream(_controller!, _availableCameras[_selectedCameraIndex]);
+        }
       }
     }
   }
@@ -208,6 +404,106 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
+  void _showReferenceCoachingModal(BuildContext context, TargetPose pose) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0F172A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: SizedBox(
+                        width: 64,
+                        height: 88,
+                        child: PoseImageView(pose: pose, fit: BoxFit.cover),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            pose.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            pose.category,
+                            style: const TextStyle(
+                              color: AppTheme.primaryCyan,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            pose.description,
+                            style: const TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 12,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        Provider.of<PoseLibraryService>(context, listen: false).clearActivePose();
+                        Navigator.of(context).pop();
+                      },
+                      child: const Text('Clear Guide', style: TextStyle(color: Color(0xFFEF4444))),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryCyan),
+                      child: const Text('Keep Posing', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_isPermissionGranted) {
@@ -219,9 +515,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     final controller = _controller;
     final isInitialized = controller != null && controller.value.isInitialized;
     final poseLibrary = Provider.of<PoseLibraryService>(context);
-
-    final isFrontCamera = _availableCameras.isNotEmpty &&
-        _availableCameras[_selectedCameraIndex].lensDirection == CameraLensDirection.front;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -247,35 +540,156 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     ),
                   ],
                 ),
-              ),
-
-            // 2. Active Target Pose Silhouette Stencil Overlay (When a pose is selected)
-            if (isInitialized && poseLibrary.activeTargetPose != null)
-              CustomPaint(
-                painter: TargetPoseStencilPainter(
-                  targetPose: poseLibrary.activeTargetPose,
-                  isFrontCamera: isFrontCamera,
-                  showSilhouette: true,
-                  showActionTags: true,
+              )
+            else
+              Center(
+                child: Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  color: const Color(0xFF090D16),
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.camera_alt_outlined, size: 56, color: AppTheme.primaryCyan.withAlpha(120)),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Viewfinder Simulation Mode',
+                          style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _errorMessage ?? 'Camera preview offline.',
+                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
 
-            // 3. Top Header Bar: Camera Switcher, Active Pose HUD Badge
-            if (isInitialized)
+            // 2. Active Reference Photo Guide (Floating PiP Card, NO line stencils on camera)
+            if (poseLibrary.activeTargetPose != null)
               Positioned(
-                top: 16,
-                left: 16,
+                top: 68,
                 right: 16,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // Active Stencil Indicator + Remove Button
-                    if (poseLibrary.activeTargetPose != null)
-                      Flexible(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Flexible(
+                child: GestureDetector(
+                  onTap: () => _showReferenceCoachingModal(context, poseLibrary.activeTargetPose!),
+                  child: Container(
+                    width: 82,
+                    height: 114,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppTheme.primaryCyan, width: 2.0),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withAlpha(160),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                        BoxShadow(
+                          color: AppTheme.primaryCyan.withAlpha(80),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          PoseImageView(
+                            pose: poseLibrary.activeTargetPose!,
+                            fit: BoxFit.cover,
+                          ),
+                          Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.black54,
+                                  Colors.transparent,
+                                  Colors.black87,
+                                ],
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 4,
+                            left: 4,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppTheme.primaryCyan,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'Reference',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 8.0,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 2,
+                            right: 2,
+                            child: GestureDetector(
+                              onTap: () => poseLibrary.clearActivePose(),
+                              child: Container(
+                                padding: const EdgeInsets.all(2),
+                                decoration: const BoxDecoration(
+                                  color: Colors.black87,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.close, color: Colors.white, size: 14),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            bottom: 4,
+                            left: 4,
+                            right: 4,
+                            child: Text(
+                              poseLibrary.activeTargetPose!.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // 3. Top Header Bar: Camera Switcher, Active Reference Guide Badge
+            Positioned(
+              top: 16,
+              left: 16,
+              right: 16,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Active Reference Guide Indicator + Remove Button
+                  if (poseLibrary.activeTargetPose != null)
+                    Flexible(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: InkWell(
+                              onTap: () => _showReferenceCoachingModal(context, poseLibrary.activeTargetPose!),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                 decoration: BoxDecoration(
@@ -286,11 +700,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.accessibility_new, color: AppTheme.primaryCyan, size: 16),
+                                    const Icon(Icons.photo_library_outlined, color: AppTheme.primaryCyan, size: 16),
                                     const SizedBox(width: 6),
                                     Flexible(
                                       child: Text(
-                                        poseLibrary.activeTargetPose!.name,
+                                        'Ref: ${poseLibrary.activeTargetPose!.name}',
                                         style: const TextStyle(
                                           color: Colors.white,
                                           fontSize: 12,
@@ -303,71 +717,72 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            InkWell(
-                              onTap: () => poseLibrary.clearActivePose(),
-                              borderRadius: BorderRadius.circular(20),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFEF4444).withAlpha(220),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: const [
-                                    BoxShadow(color: Colors.black45, blurRadius: 4),
-                                  ],
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.close_rounded, color: Colors.white, size: 14),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Remove',
-                                      style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                                    ),
-                                  ],
-                                ),
+                          ),
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: () => poseLibrary.clearActivePose(),
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEF4444).withAlpha(220),
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: const [
+                                  BoxShadow(color: Colors.black45, blurRadius: 4),
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.close_rounded, color: Colors.white, size: 14),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Clear',
+                                    style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withAlpha(160),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.auto_awesome, color: AppTheme.primaryCyan, size: 14),
-                            SizedBox(width: 6),
-                            Text(
-                              'Snap Photo for AI Scene Poses',
-                              style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-
-                    // Lens Switcher Button
+                    )
+                  else
                     Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        color: Colors.black.withAlpha(150),
-                        shape: BoxShape.circle,
+                        color: Colors.black.withAlpha(160),
+                        borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: Colors.white24),
                       ),
-                      child: IconButton(
-                        icon: const Icon(Icons.flip_camera_ios, color: Colors.white, size: 20),
-                        onPressed: _availableCameras.length > 1 ? _toggleCameraLens : null,
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.auto_awesome, color: AppTheme.primaryCyan, size: 14),
+                          SizedBox(width: 6),
+                          Text(
+                            'Click Photo to get 3 Suggestions',
+                            style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
+
+                  // Lens Switcher Button
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(150),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: IconButton(
+                      icon: const Icon(Icons.flip_camera_ios, color: Colors.white, size: 20),
+                      onPressed: _availableCameras.length > 1 ? _toggleCameraLens : null,
+                    ),
+                  ),
+                ],
               ),
+            ),
 
             // Hardware Error Banner
             if (_errorMessage != null)
@@ -428,8 +843,17 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                 ),
               ),
 
+             // 4.5. Smart Recommended Pose Carousel Tray (Huawei AI Camera style)
+            if (!_isAnalyzingPhoto)
+              const Positioned(
+                bottom: 112,
+                left: 0,
+                right: 0,
+                child: SmartPoseCarousel(),
+              ),
+
             // 5. Bottom Control Deck (Capture Shutter, Last Photo Quick Re-Analyze)
-            if (isInitialized && !_isAnalyzingPhoto)
+            if (!_isAnalyzingPhoto)
               Positioned(
                 bottom: 24,
                 left: 0,

@@ -17,7 +17,7 @@ void main() {
 
     test('Initializes with default 80-d context vector', () {
       expect(scheduler.currentContextVector.length, equals(80));
-      expect(scheduler.detectedPeopleCount, equals(1));
+      expect(scheduler.detectedPeopleCount, equals(0));
       expect(scheduler.currentStance, equals(StanceType.standing));
     });
 

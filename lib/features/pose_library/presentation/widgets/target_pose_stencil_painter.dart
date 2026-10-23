@@ -27,11 +27,29 @@ class TargetPoseStencilPainter extends CustomPainter {
 
     // 1. Draw Dynamic Anatomical Body Silhouette Contour (Huawei AI / Vogue Stencil Style)
     if (showSilhouette) {
-      final dynamicBodyPath = SilhouetteContourGenerator.generateDynamicBodyPath(
+      Path dynamicBodyPath = SilhouetteContourGenerator.generateDynamicBodyPath(
         keypoints: keypoints,
         canvasSize: size,
         isFrontCamera: isFrontCamera,
       );
+
+      // Fallback: If dynamic skeleton contour generation is empty, use stored silhouette contour points
+      if (dynamicBodyPath.getBounds().isEmpty && targetPose!.silhouetteContour.isNotEmpty) {
+        final contourPath = Path();
+        final contour = targetPose!.silhouetteContour;
+        for (int i = 0; i < contour.length; i++) {
+          double x = contour[i][0] * size.width;
+          if (isFrontCamera) x = size.width - x;
+          double y = contour[i][1] * size.height;
+          if (i == 0) {
+            contourPath.moveTo(x, y);
+          } else {
+            contourPath.lineTo(x, y);
+          }
+        }
+        contourPath.close();
+        dynamicBodyPath = contourPath;
+      }
 
       final contourGlowPaint = Paint()
         ..color = Colors.white.withAlpha(50)
@@ -129,12 +147,12 @@ class TargetPoseStencilPainter extends CustomPainter {
         if (pos == Offset.zero) continue;
 
         final badgeOffset = Offset(pos.dx + 12, pos.dy - 12);
-        _drawActionBadge(canvas, badgeOffset, '${tag.arrow} ${tag.label}');
+        _drawActionBadge(canvas, size, badgeOffset, '${tag.arrow} ${tag.label}');
       }
     }
   }
 
-  void _drawActionBadge(Canvas canvas, Offset offset, String text) {
+  void _drawActionBadge(Canvas canvas, Size canvasSize, Offset offset, String text) {
     final textSpan = TextSpan(
       text: text,
       style: const TextStyle(
@@ -154,8 +172,11 @@ class TargetPoseStencilPainter extends CustomPainter {
     final badgeWidth = textPainter.width + padding.horizontal;
     final badgeHeight = textPainter.height + padding.vertical;
 
+    final clampedX = offset.dx.clamp(8.0, (canvasSize.width - badgeWidth - 8.0).clamp(8.0, canvasSize.width));
+    final clampedY = offset.dy.clamp(8.0, (canvasSize.height - badgeHeight - 8.0).clamp(8.0, canvasSize.height));
+
     final badgeRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(offset.dx, offset.dy, badgeWidth, badgeHeight),
+      Rect.fromLTWH(clampedX, clampedY, badgeWidth, badgeHeight),
       const Radius.circular(8),
     );
 
@@ -173,7 +194,7 @@ class TargetPoseStencilPainter extends CustomPainter {
 
     textPainter.paint(
       canvas,
-      Offset(offset.dx + padding.left, offset.dy + padding.top),
+      Offset(clampedX + padding.left, clampedY + padding.top),
     );
   }
 

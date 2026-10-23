@@ -81,5 +81,50 @@ void main() {
       await tester.pump();
       expect(find.byType(SmartPoseCarousel), findsOneWidget);
     });
+
+    testWidgets('SmartPoseCarousel provides fallback recommendations when library is empty', (WidgetTester tester) async {
+      final poseLibrary = PoseLibraryService();
+      final recommender = PoseRecommendationService();
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: poseLibrary),
+            Provider.value(value: recommender),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: SmartPoseCarousel(),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      // Should render at least one PoseThumbnailCard generated from fallback neural recommender
+      expect(find.byType(PoseThumbnailCard), findsWidgets);
+    });
+
+    testWidgets('SmartPoseCarousel auto-selects top recommendation and updates activeTargetPose', (WidgetTester tester) async {
+      final poseLibrary = PoseLibraryService();
+      final recommender = PoseRecommendationService();
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider.value(value: poseLibrary),
+            Provider.value(value: recommender),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: SmartPoseCarousel(),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+      expect(poseLibrary.activeTargetPose, isNotNull);
+    });
   });
 }

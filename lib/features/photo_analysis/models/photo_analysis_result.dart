@@ -54,6 +54,10 @@ class PhotoAnalysisResult {
   final List<TargetPose> recommendedPoses; // Top 5
   final double averageLuminance;
   final double colorTemperatureK;
+  final String? predictedCategory;
+  final double? categoryProbability;
+  final double? neuralConfidenceScore;
+  final int? inferenceTimeMs;
 
   PhotoAnalysisResult({
     required this.imagePath,
@@ -73,5 +77,9 @@ class PhotoAnalysisResult {
     required this.recommendedPoses,
     required this.averageLuminance,
     required this.colorTemperatureK,
+    this.predictedCategory,
+    this.categoryProbability,
+    this.neuralConfidenceScore,
+    this.inferenceTimeMs,
   });
 }

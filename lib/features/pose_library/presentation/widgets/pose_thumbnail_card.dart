@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../data/models/target_pose.dart';
-import 'mini_silhouette_painter.dart';
+import 'pose_image_view.dart';
 
 /// Interactive bottom carousel card for a single recommended target pose.
-/// Displays a live vector silhouette preview, pose title, and dynamic match badge.
+/// Displays the real reference photo from the 12,000 dataset, pose title, and dynamic match badge.
 class PoseThumbnailCard extends StatelessWidget {
   final TargetPose pose;
   final bool isSelected;
   final int matchScore;
   final VoidCallback onTap;
+  final VoidCallback? onInfoTap;
 
   const PoseThumbnailCard({
     super.key,
@@ -17,11 +18,11 @@ class PoseThumbnailCard extends StatelessWidget {
     required this.isSelected,
     required this.matchScore,
     required this.onTap,
+    this.onInfoTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final Color accentColor = isSelected ? AppTheme.primaryCyan : Colors.white;
     final Color scoreBadgeColor = matchScore >= 80
         ? AppTheme.successGreen
         : (matchScore >= 50 ? AppTheme.primaryCyan : AppTheme.warningAmber);
@@ -31,14 +32,13 @@ class PoseThumbnailCard extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeInOut,
-        width: 82,
+        width: 104,
         margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xEE1E293B) : const Color(0x990F172A),
+          color: isSelected ? const Color(0xFF1E293B) : const Color(0xCC0F172A),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isSelected ? AppTheme.primaryCyan : Colors.white.withAlpha(35),
+            color: isSelected ? AppTheme.primaryCyan : Colors.white24,
             width: isSelected ? 2.0 : 1.0,
           ),
           boxShadow: isSelected
@@ -51,60 +51,107 @@ class PoseThumbnailCard extends StatelessWidget {
                 ]
               : null,
         ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Vector Silhouette Thumbnail Preview
-            Container(
-              width: 32,
-              height: 32,
-              padding: const EdgeInsets.all(2),
-              decoration: BoxDecoration(
-                color: Colors.black.withAlpha(120),
-                borderRadius: BorderRadius.circular(6),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(13),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Real Reference Photo from 12,000 Dataset
+              PoseImageView(
+                pose: pose,
+                fit: BoxFit.cover,
               ),
-              child: CustomPaint(
-                painter: MiniSilhouettePainter(
-                  pose: pose,
-                  isSelected: isSelected,
-                  accentColor: accentColor,
+
+              // Gradient Overlay for Readability
+              Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black45,
+                      Colors.black87,
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 3),
 
-            // Pose Title
-            Text(
-              pose.name,
-              style: TextStyle(
-                color: isSelected ? Colors.white : AppTheme.textPrimary,
-                fontSize: 9.5,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 2),
-
-            // Context Match Score Pill Badge
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: scoreBadgeColor.withAlpha(isSelected ? 60 : 30),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                '✨ $matchScore%',
-                style: TextStyle(
-                  color: scoreBadgeColor,
-                  fontSize: 8.0,
-                  fontWeight: FontWeight.bold,
+              // Match Score Badge (Top Left)
+              Positioned(
+                top: 5,
+                left: 5,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: scoreBadgeColor.withAlpha(220),
+                    borderRadius: BorderRadius.circular(6),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black45, blurRadius: 4),
+                    ],
+                  ),
+                  child: Text(
+                    '✨ $matchScore%',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8.5,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ],
+
+              // Info Icon Button (Top Right)
+              if (onInfoTap != null)
+                Positioned(
+                  top: 3,
+                  right: 3,
+                  child: GestureDetector(
+                    onTap: onInfoTap,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(160),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.info_outline, color: Colors.white, size: 14),
+                    ),
+                  ),
+                ),
+
+              // Pose Title & Category (Bottom)
+              Positioned(
+                bottom: 6,
+                left: 6,
+                right: 6,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      pose.name,
+                      style: TextStyle(
+                        color: isSelected ? AppTheme.primaryCyan : Colors.white,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      pose.category,
+                      style: const TextStyle(
+                        color: AppTheme.textSecondary,
+                        fontSize: 8.0,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -9,13 +9,14 @@ class PoseLibraryService extends ChangeNotifier {
   String _selectedCategory = 'All';
   TargetPose? _activeTargetPose;
   bool _isLoading = true;
+  bool _userExplicitlyCleared = false;
 
   List<TargetPose> get allPoses => _allPoses;
   String get selectedCategory => _selectedCategory;
   bool get isLoading => _isLoading;
+  bool get userExplicitlyCleared => _userExplicitlyCleared;
 
   /// Returns the currently active TargetPose for stencil rendering.
-  /// Null by default so the camera opens clean without any stencil until chosen.
   TargetPose? get activeTargetPose => _activeTargetPose;
 
   /// Returns all unique categories available across the database.
@@ -35,9 +36,18 @@ class PoseLibraryService extends ChangeNotifier {
     return _allPoses.where((p) => p.category.toLowerCase() == _selectedCategory.toLowerCase()).toList();
   }
 
+  /// Automatically selects a recommended pose as active if no pose is active and not explicitly cleared.
+  void autoSelectRecommendedPose(TargetPose pose) {
+    if (_activeTargetPose == null && !_userExplicitlyCleared) {
+      _activeTargetPose = pose;
+      notifyListeners();
+    }
+  }
+
   /// Sets a target pose as the active camera stencil overlay.
   void setCustomActivePose(TargetPose pose) {
     _activeTargetPose = pose;
+    _userExplicitlyCleared = false;
     notifyListeners();
   }
 
@@ -49,6 +59,7 @@ class PoseLibraryService extends ChangeNotifier {
     }
     try {
       _activeTargetPose = _allPoses.firstWhere((p) => p.id == id);
+      _userExplicitlyCleared = false;
       notifyListeners();
     } catch (_) {
       clearActivePose();
@@ -58,10 +69,11 @@ class PoseLibraryService extends ChangeNotifier {
   /// Clears the active stencil overlay completely from the camera.
   void clearActivePose() {
     _activeTargetPose = null;
+    _userExplicitlyCleared = true;
     notifyListeners();
   }
 
-  /// Loads target pose database from assets (inactive by default).
+  /// Loads target pose database from assets.
   Future<void> loadPoseLibrary() async {
     _isLoading = true;
     notifyListeners();
@@ -71,7 +83,9 @@ class PoseLibraryService extends ChangeNotifier {
       final List<dynamic> jsonList = jsonDecode(jsonString) as List<dynamic>;
       _allPoses = jsonList.map((j) => TargetPose.fromJson(j as Map<String, dynamic>)).toList();
       _isLoading = false;
-      // Do NOT set activeTargetPose by default - camera starts clean
+      if (_activeTargetPose == null && !_userExplicitlyCleared && _allPoses.isNotEmpty) {
+        _activeTargetPose = _allPoses.first;
+      }
       notifyListeners();
     } catch (e) {
       debugPrint('Error loading pose library: $e');

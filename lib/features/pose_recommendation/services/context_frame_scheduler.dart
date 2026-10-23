@@ -17,11 +17,12 @@ class ContextFrameScheduler extends ChangeNotifier {
 
   // Real-time Aggregated Context State
   List<double> _currentContextVector = List.filled(80, 0.0);
-  List<double> _sceneVector = List.filled(64, 0.15);
-  int _detectedPeopleCount = 1;
+  List<double> _sceneVector = List.filled(64, 0.0);
+  int _detectedPeopleCount = 0;
   int _detectedPropIndex = 0;
   bool _isFrontCamera = true;
   StanceType _currentStance = StanceType.standing;
+  List<Pose> _currentPoses = [];
   TargetPose? _neuralGeneratedPose;
 
   // Pipeline Execution Timers & Latches (ms)
@@ -41,6 +42,7 @@ class ContextFrameScheduler extends ChangeNotifier {
   int get detectedPropIndex => _detectedPropIndex;
   bool get isFrontCamera => _isFrontCamera;
   StanceType get currentStance => _currentStance;
+  List<Pose> get currentPoses => _currentPoses;
   TargetPose? get neuralGeneratedPose => _neuralGeneratedPose;
 
   /// Fast Pipeline (30 FPS / ~80ms throttle):
@@ -48,12 +50,13 @@ class ContextFrameScheduler extends ChangeNotifier {
   void onFramePoses(List<Pose> poses, {required bool isFrontCamera}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     _isFrontCamera = isFrontCamera;
+    _currentPoses = poses;
 
-    // Fast Pipeline Latch: ~60ms (up to ~16 FPS on mobile)
+    // Fast Pipeline Latch: ~60ms
     if (now - _lastFastRunMs >= 60) {
       _lastFastRunMs = now;
       final int previousCount = _detectedPeopleCount;
-      _detectedPeopleCount = max(1, poses.length);
+      _detectedPeopleCount = poses.length;
 
       if (previousCount != _detectedPeopleCount) {
         _recomputeContextVector();
@@ -61,8 +64,8 @@ class ContextFrameScheduler extends ChangeNotifier {
       }
     }
 
-    // Medium Pipeline Latch: ~500ms (2 FPS)
-    if (now - _lastMediumRunMs >= 500) {
+    // Medium Pipeline Latch: ~400ms
+    if (now - _lastMediumRunMs >= 400) {
       _lastMediumRunMs = now;
       _processMediumPipeline(poses);
     }

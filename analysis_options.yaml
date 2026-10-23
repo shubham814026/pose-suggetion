@@ -1,5 +1,12 @@
 include: package:flutter_lints/flutter.yaml
 
+analyzer:
+  exclude:
+    - build/**
+    - venv/**
+    - dataset_raw/**
+    - assets/**
+
 linter:
   rules:
     prefer_const_constructors: true

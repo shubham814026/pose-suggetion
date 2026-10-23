@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../core/theme/app_theme.dart';
 import '../features/camera/presentation/camera_screen.dart';
+import '../features/pose_library/presentation/pose_library_screen.dart';
+import '../features/settings/presentation/settings_screen.dart';
 
 class AppNavigationShell extends StatefulWidget {
   const AppNavigationShell({super.key});
@@ -16,32 +18,14 @@ class _AppNavigationShellState extends State<AppNavigationShell> {
   Widget build(BuildContext context) {
     final screens = [
       const CameraScreen(),
-      const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.grid_view_outlined, size: 64, color: AppTheme.accentViolet),
-            SizedBox(height: 16),
-            Text(
-              'Pose Library Baseline (Phase 3 Ready)',
-              style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
+      PoseLibraryScreen(
+        onSelectPose: (_) {
+          setState(() {
+            _currentIndex = 0;
+          });
+        },
       ),
-      const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.settings_outlined, size: 64, color: AppTheme.successGreen),
-            SizedBox(height: 16),
-            Text(
-              'Settings Shell',
-              style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
-      ),
+      const SettingsScreen(),
     ];
 
     return Scaffold(

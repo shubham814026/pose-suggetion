@@ -3,12 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../pose_library/data/models/target_pose.dart';
-import '../../pose_library/presentation/widgets/mini_silhouette_painter.dart';
+import '../../pose_library/presentation/widgets/pose_image_view.dart';
 import '../../pose_library/services/pose_library_service.dart';
 import '../../pose_recommendation/services/pose_recommendation_service.dart';
 import '../models/photo_analysis_result.dart';
 
-/// Screen displaying the multi-modal photo analysis breakdown and top 5 dynamic AI recommended poses.
+/// Screen displaying clicked photo analysis and exactly 3 suggested photos from the 12,000 dataset
+/// with actionable coaching explaining why they will look better.
 class PhotoAnalysisScreen extends StatefulWidget {
   final PhotoAnalysisResult analysis;
 
@@ -32,48 +33,123 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
     }
   }
 
-  void _generateNovelAIPose(BuildContext context) {
-    final recommender = Provider.of<PoseRecommendationService>(context, listen: false);
-    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
-
-    final novelPose = recommender.generatePoseFromContext(
-      widget.analysis.contextVector,
-      customName: '✨ AI Context Synthesis',
-      customDesc: 'Novel neural-generated posture customized for this scene.',
-    );
-
-    if (novelPose != null) {
-      setState(() {
-        _selectedPose = novelPose;
-      });
-      poseLibrary.setCustomActivePose(novelPose);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-            '✨ Synthesized new AI Context Pose for this photo!',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-          backgroundColor: AppTheme.primaryCyan.withAlpha(220),
-          duration: const Duration(milliseconds: 1200),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_selectedPose == null) {
+      final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+      if (widget.analysis.recommendedPoses.isNotEmpty) {
+        _selectedPose = widget.analysis.recommendedPoses.first;
+      } else if (poseLibrary.allPoses.isNotEmpty) {
+        _selectedPose = poseLibrary.allPoses.first;
+      }
     }
   }
 
-  void _applyStencilAndReturnToCamera(BuildContext context) {
-    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
-    if (_selectedPose != null) {
-      poseLibrary.setCustomActivePose(_selectedPose!);
+  String _deriveWhyLooksBetter(TargetPose pose) {
+    final name = pose.name.toLowerCase();
+    final cat = pose.category.toLowerCase();
+
+    if (cat.contains('sitting') || name.contains('seat') || name.contains('bench')) {
+      return 'Comfortable seated geometry with relaxed hands and angled shoulders eliminates stiffness and adds casual lifestyle depth.';
+    } else if (cat.contains('beach') || cat.contains('coastal')) {
+      return 'Open chest and relaxed stride capture natural outdoor lighting and wind with effortless movement.';
+    } else if (cat.contains('fashion') || cat.contains('streetwear') || cat.contains('aesthetic')) {
+      return 'Subtle 45° torso turn with weight shifted to the back leg creates flattering silhouette elongation and high-fashion attitude.';
+    } else if (cat.contains('couple') || cat.contains('duo')) {
+      return 'Complementary head tilts and staggered shoulder heights create an intimate, natural connection without feeling rigid.';
+    } else if (cat.contains('group') || cat.contains('family')) {
+      return 'Tiered multi-level spacing avoids flat lineup and creates a lively, cohesive composition.';
+    } else if (cat.contains('gym') || cat.contains('fitness')) {
+      return 'Clean athletic posture with defined limb alignment highlights strength and balance.';
+    } else {
+      return 'Enhanced spine alignment, relaxed natural hands, and purposeful chin angle bring confident, flattering composition.';
     }
+  }
+
+  void _useAsReferenceAndReturn(BuildContext context, TargetPose pose) {
+    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+    poseLibrary.setCustomActivePose(pose);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '✨ Reference set: "${pose.name}". Use the corner preview to pose!',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: AppTheme.primaryCyan.withAlpha(230),
+        duration: const Duration(milliseconds: 1400),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
     Navigator.of(context).pop(true);
+  }
+
+  void _openFullPhotoModal(BuildContext context, TargetPose pose) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: MediaQuery.of(context).size.height * 0.65,
+                  child: PoseImageView(
+                    pose: pose,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        pose.name,
+                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final analysis = widget.analysis;
     final recommender = Provider.of<PoseRecommendationService>(context, listen: false);
+    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+
+    final List<TargetPose> top3Photos = analysis.recommendedPoses.isNotEmpty
+        ? analysis.recommendedPoses.take(3).toList()
+        : (poseLibrary.allPoses.isNotEmpty ? poseLibrary.allPoses.take(3).toList() : []);
+
+    final activePose = _selectedPose ?? (top3Photos.isNotEmpty ? top3Photos.first : null);
 
     final String peopleBadgeText = analysis.peopleCount == 0
         ? '👤 0 People (Empty Scene)'
@@ -82,28 +158,35 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF090D16),
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: const Color(0xFF0F172A),
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
           onPressed: () => Navigator.of(context).pop(false),
         ),
-        title: const Text(
-          'Photo Scene Context',
-          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        title: const Column(
+          children: [
+            Text(
+              'AI Photo Suggestions',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '3 Photos Suggested from 12,000 Dataset',
+              style: TextStyle(color: AppTheme.primaryCyan, fontSize: 11),
+            ),
+          ],
         ),
         centerTitle: true,
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // Upper Section: Snapshot Preview with Context Badges
+            // Upper Section: User Clicked Photo with Scene Context Badges
             Expanded(
               flex: 4,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // Photo Image File
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: ClipRRect(
@@ -121,7 +204,7 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
                     ),
                   ),
 
-                  // Subtle gradient overlay for readability
+                  // Gradient overlay
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: Container(
@@ -140,36 +223,44 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
                     ),
                   ),
 
-                  // Floating Context Badges
+                  // "Your Clicked Photo" Pill Label (Top Left)
                   Positioned(
-                    bottom: 20,
-                    left: 28,
-                    right: 28,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    top: 18,
+                    left: 26,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(200),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white30),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.camera_alt, color: Colors.white, size: 12),
+                          SizedBox(width: 4),
+                          Text(
+                            'Your Captured Photo',
+                            style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Floating Context Badges (Bottom)
+                  Positioned(
+                    bottom: 18,
+                    left: 26,
+                    right: 26,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
                       children: [
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 6,
-                          children: [
-                            _buildContextBadge(
-                              '${analysis.lightingEmoji} ${analysis.lightingName}',
-                              const Color(0xFFF59E0B),
-                            ),
-                            _buildContextBadge(
-                              '${analysis.sceneEmoji} ${analysis.sceneName}',
-                              const Color(0xFF0EA5E9),
-                            ),
-                            _buildContextBadge(
-                              peopleBadgeText,
-                              analysis.peopleCount > 0 ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-                            ),
-                            _buildContextBadge(
-                              '✨ ${analysis.occasionVibe}',
-                              const Color(0xFFA855F7),
-                            ),
-                          ],
-                        ),
+                        _buildContextBadge('${analysis.lightingEmoji} ${analysis.lightingName}', const Color(0xFFF59E0B)),
+                        _buildContextBadge('${analysis.sceneEmoji} ${analysis.sceneName}', const Color(0xFF0EA5E9)),
+                        _buildContextBadge(peopleBadgeText, analysis.peopleCount > 0 ? const Color(0xFF10B981) : const Color(0xFF94A3B8)),
+                        _buildContextBadge('✨ ${analysis.occasionVibe}', const Color(0xFFA855F7)),
                       ],
                     ),
                   ),
@@ -177,89 +268,66 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
               ),
             ),
 
-            // Lower Section: Top Recommendations & Action Deck
+            // Lower Section: Top 3 Suggested Photos from 12k dataset
             Expanded(
               flex: 5,
               child: Container(
                 width: double.infinity,
                 decoration: const BoxDecoration(
                   color: Color(0xFF0F172A),
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
                   boxShadow: [
-                    BoxShadow(
-                      color: Colors.black45,
-                      blurRadius: 16,
-                      offset: Offset(0, -4),
-                    ),
+                    BoxShadow(color: Colors.black54, blurRadius: 16, offset: Offset(0, -4)),
                   ],
                 ),
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Header Row with AI Neural Synthesizer trigger
+                    // Header
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          analysis.peopleCount == 0
-                              ? 'Suggested Staging Poses (0 People)'
-                              : 'AI Generated Poses (${analysis.peopleCount} Detected)',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        const Text(
+                          '3 Suggested Photos (Will Look Better)',
+                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
                         ),
-                        InkWell(
-                          onTap: () => _generateNovelAIPose(context),
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        if (analysis.predictedCategory != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                colors: [Color(0xFF0284C7), Color(0xFF0EA5E9)],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: AppTheme.primaryCyan.withAlpha(80),
-                                  blurRadius: 6,
-                                ),
-                              ],
+                              color: AppTheme.primaryCyan.withAlpha(40),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppTheme.primaryCyan.withAlpha(120), width: 0.8),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.auto_awesome, color: Colors.white, size: 14),
-                                SizedBox(width: 4),
+                                const Icon(Icons.memory, color: AppTheme.primaryCyan, size: 11),
+                                const SizedBox(width: 4),
                                 Text(
-                                  'AI Synthesize',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                  'ML: ${analysis.predictedCategory} (${((analysis.categoryProbability ?? 0.85) * 100).toInt()}%)',
+                                  style: const TextStyle(color: AppTheme.primaryCyan, fontSize: 10, fontWeight: FontWeight.bold),
                                 ),
                               ],
                             ),
+                          )
+                        else
+                          const Text(
+                            '12,000 Dataset Matches',
+                            style: TextStyle(color: AppTheme.primaryCyan, fontSize: 11, fontWeight: FontWeight.bold),
                           ),
-                        ),
                       ],
                     ),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
 
-                    // Top 5 Pose Selection Carousel
+                    // Top 3 Suggested Photos Cards
                     SizedBox(
-                      height: 130,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: analysis.recommendedPoses.length,
-                        itemBuilder: (context, index) {
-                          final pose = analysis.recommendedPoses[index];
-                          final isSelected = _selectedPose?.id == pose.id;
-
+                      height: 124,
+                      child: Row(
+                        children: top3Photos.map((pose) {
+                          final isSelected = activePose?.id == pose.id;
                           final int matchScore = recommender.calculateDynamicMatchPercentage(
                             sceneVector: analysis.sceneVector,
                             pose: pose,
@@ -267,151 +335,194 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
                             detectedStance: analysis.stanceType,
                           ).round();
 
-                          final String badgeLabel = analysis.peopleCount == 0
-                              ? '$matchScore% Scene Fit'
-                              : '$matchScore% Match';
-
-                          return GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                _selectedPose = pose;
-                              });
-                            },
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              width: 105,
-                              margin: const EdgeInsets.only(right: 10),
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? const Color(0xFF1E293B)
-                                    : const Color(0xFF090D16).withAlpha(180),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: isSelected
-                                      ? AppTheme.primaryCyan
-                                      : Colors.white12,
-                                  width: isSelected ? 2.0 : 1.0,
+                          return Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  _selectedPose = pose;
+                                });
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 4),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                    color: isSelected ? AppTheme.primaryCyan : Colors.white24,
+                                    width: isSelected ? 2.5 : 1.0,
+                                  ),
+                                  boxShadow: isSelected
+                                      ? [
+                                          BoxShadow(
+                                            color: AppTheme.primaryCyan.withAlpha(90),
+                                            blurRadius: 10,
+                                            spreadRadius: 1,
+                                          ),
+                                        ]
+                                      : null,
                                 ),
-                                boxShadow: isSelected
-                                    ? [
-                                        BoxShadow(
-                                          color: AppTheme.primaryCyan.withAlpha(90),
-                                          blurRadius: 10,
-                                        ),
-                                      ]
-                                    : [],
-                              ),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  // Silhouette Thumbnail Canvas
-                                  Expanded(
-                                    child: CustomPaint(
-                                      size: const Size(double.infinity, double.infinity),
-                                      painter: MiniSilhouettePainter(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      // Real Photo Image
+                                      PoseImageView(
                                         pose: pose,
-                                        isSelected: isSelected,
-                                        accentColor: AppTheme.primaryCyan,
+                                        fit: BoxFit.cover,
                                       ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
 
-                                  // Match Badge
-                                  Container(
-                                    padding:
-                                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: isSelected
-                                          ? AppTheme.primaryCyan.withAlpha(220)
-                                          : Colors.white12,
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(
-                                      '✨ $badgeLabel',
-                                      style: TextStyle(
-                                        color: isSelected ? Colors.black : Colors.white70,
-                                        fontSize: 8.5,
-                                        fontWeight: FontWeight.bold,
+                                      // Subtle Bottom Gradient
+                                      Container(
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                            colors: [
+                                              Colors.transparent,
+                                              Colors.black45,
+                                              Colors.black87,
+                                            ],
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 3),
 
-                                  // Pose Name
-                                  Text(
-                                    pose.name,
-                                    style: TextStyle(
-                                      color: isSelected ? Colors.white : Colors.white70,
-                                      fontSize: 10,
-                                      fontWeight:
-                                          isSelected ? FontWeight.bold : FontWeight.normal,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
+                                      // Match Badge
+                                      Positioned(
+                                        top: 5,
+                                        left: 5,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: isSelected ? AppTheme.primaryCyan : Colors.black87,
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            '✨ $matchScore%',
+                                            style: TextStyle(
+                                              color: isSelected ? Colors.black : Colors.white,
+                                              fontSize: 8.5,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+
+                                      // Pose Name & Category (Bottom)
+                                      Positioned(
+                                        bottom: 5,
+                                        left: 5,
+                                        right: 5,
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              pose.name,
+                                              style: TextStyle(
+                                                color: isSelected ? AppTheme.primaryCyan : Colors.white,
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            Text(
+                                              pose.category,
+                                              style: const TextStyle(
+                                                color: AppTheme.textSecondary,
+                                                fontSize: 7.5,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
                             ),
                           );
-                        },
+                        }).toList(),
                       ),
                     ),
 
                     const SizedBox(height: 8),
 
-                    // Selected Pose In-Situ Guidance Tags
-                    if (_selectedPose != null && _selectedPose!.actionTags.isNotEmpty)
+                    // "Why this photo will look better" coaching advice
+                    if (activePose != null)
                       Expanded(
                         child: Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF090D16).withAlpha(150),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white10),
+                            color: const Color(0xFF1E293B),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: Colors.white12),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Text(
-                                'Action Stencil Guidance:',
-                                style: TextStyle(
-                                  color: AppTheme.textSecondary,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 4,
-                                children: _selectedPose!.actionTags.take(3).map((tag) {
-                                  return Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: AppTheme.primaryCyan.withAlpha(35),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: AppTheme.primaryCyan.withAlpha(120),
-                                        width: 0.8,
-                                      ),
-                                    ),
+                              Row(
+                                children: [
+                                  const Icon(Icons.lightbulb_outline, color: AppTheme.primaryCyan, size: 15),
+                                  const SizedBox(width: 6),
+                                  Expanded(
                                     child: Text(
-                                      '${tag.arrow} ${tag.label}',
+                                      'Why "${activePose.name}" will look better:',
                                       style: const TextStyle(
                                         color: AppTheme.primaryCyan,
-                                        fontSize: 9.5,
+                                        fontSize: 11,
                                         fontWeight: FontWeight.bold,
                                       ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                  );
-                                }).toList(),
+                                  ),
+                                  InkWell(
+                                    onTap: () => _openFullPhotoModal(context, activePose),
+                                    child: const Text(
+                                      'View Photo ↗',
+                                      style: TextStyle(color: Colors.white70, fontSize: 10, decoration: TextDecoration.underline),
+                                    ),
+                                  ),
+                                ],
                               ),
+                              const SizedBox(height: 4),
+                              Expanded(
+                                child: SingleChildScrollView(
+                                  child: Text(
+                                    _deriveWhyLooksBetter(activePose),
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 11.5,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              if (activePose.actionTags.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 4,
+                                  children: activePose.actionTags.take(3).map((tag) {
+                                    return Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primaryCyan.withAlpha(30),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: AppTheme.primaryCyan.withAlpha(100), width: 0.8),
+                                      ),
+                                      child: Text(
+                                        '${tag.arrow} ${tag.label}',
+                                        style: const TextStyle(color: AppTheme.primaryCyan, fontSize: 9.5, fontWeight: FontWeight.bold),
+                                      ),
+                                    );
+                                  }).toList(),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -421,33 +532,51 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
 
                     const SizedBox(height: 8),
 
-                    // Floating Apply Stencil Button
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton.icon(
-                        onPressed: () => _applyStencilAndReturnToCamera(context),
-                        icon: const Icon(Icons.camera_alt_rounded, color: Colors.black, size: 20),
-                        label: Text(
-                          _selectedPose != null
-                              ? 'Apply Stencil: "${_selectedPose!.name}"'
-                              : 'Apply Stencil & Shoot',
-                          style: const TextStyle(
-                            color: Colors.black,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
+                    // Action Buttons Row
+                    Row(
+                      children: [
+                        // Retake / Back to Camera
+                        Expanded(
+                          flex: 1,
+                          child: SizedBox(
+                            height: 44,
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Colors.white24),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              child: const Text(
+                                'Retake',
+                                style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                              ),
+                            ),
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
                         ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.primaryCyan,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
+                        const SizedBox(width: 10),
+                        // Use as Reference Guide
+                        Expanded(
+                          flex: 2,
+                          child: SizedBox(
+                            height: 44,
+                            child: ElevatedButton.icon(
+                              onPressed: activePose != null
+                                  ? () => _useAsReferenceAndReturn(context, activePose)
+                                  : null,
+                              icon: const Icon(Icons.photo_library_outlined, color: Colors.black, size: 18),
+                              label: const Text(
+                                'Use as Reference Guide',
+                                style: TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.bold),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.primaryCyan,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                elevation: 4,
+                              ),
+                            ),
                           ),
-                          elevation: 6,
                         ),
-                      ),
+                      ],
                     ),
                   ],
                 ),

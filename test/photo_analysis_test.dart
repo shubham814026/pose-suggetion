@@ -140,5 +140,22 @@ void main() {
       expect(result.peopleCount, equals(0));
       expect(result.occasionVibe, contains('Empty'));
     });
+
+    test('generateDynamicPoseRecommendations produces 5 non-null target poses', () {
+      final ctx = List<double>.filled(80, 0.1);
+      final poses = recommender.generateDynamicPoseRecommendations(
+        baseContextVector: ctx,
+        sceneName: 'Beach',
+        lightingName: 'Golden Hour',
+        peopleCount: 1,
+        count: 5,
+      );
+
+      expect(poses.length, equals(5));
+      for (final p in poses) {
+        expect(p.keypoints.length, equals(33));
+        expect(p.name.isNotEmpty, isTrue);
+      }
+    });
   });
 }
