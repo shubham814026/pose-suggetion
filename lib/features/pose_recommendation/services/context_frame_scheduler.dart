@@ -19,11 +19,18 @@ class ContextFrameScheduler extends ChangeNotifier {
   List<double> _currentContextVector = List.filled(80, 0.0);
   List<double> _sceneVector = List.filled(64, 0.0);
   int _detectedPeopleCount = 0;
-  int _detectedPropIndex = 0;
+  int _detectedPropIndex = 4; // Default to Home, Cozy & Balcony (4), not Beach (0)
   bool _isFrontCamera = true;
   StanceType _currentStance = StanceType.standing;
   List<Pose> _currentPoses = [];
   TargetPose? _neuralGeneratedPose;
+  double _shoulderWidthNorm = 0.16;
+  double _torsoHeightNorm = 0.40;
+  bool _isLegsVisible = true;
+  bool _isSelfieComposition = false;
+  double _kneeAngleNorm = 0.95;
+  double _hipAngleNorm = 0.95;
+  double _interPersonProximity = 0.0;
 
   // Pipeline Execution Timers & Latches (ms)
   int _lastFastRunMs = 0;
@@ -46,17 +53,19 @@ class ContextFrameScheduler extends ChangeNotifier {
   TargetPose? get neuralGeneratedPose => _neuralGeneratedPose;
 
   /// Fast Pipeline (30 FPS / ~80ms throttle):
-  /// Ingests live poses from Google ML Kit to update people count & joint stance.
-  void onFramePoses(List<Pose> poses, {required bool isFrontCamera}) {
+  /// Ingests live poses and detected people count from ML detectors to update people count & joint stance.
+  void onFramePoses(List<Pose> poses, {required bool isFrontCamera, int? peopleCount}) {
     final now = DateTime.now().millisecondsSinceEpoch;
     _isFrontCamera = isFrontCamera;
     _currentPoses = poses;
+
+    final int exactPeopleCount = peopleCount ?? poses.length;
 
     // Fast Pipeline Latch: ~60ms
     if (now - _lastFastRunMs >= 60) {
       _lastFastRunMs = now;
       final int previousCount = _detectedPeopleCount;
-      _detectedPeopleCount = poses.length;
+      _detectedPeopleCount = exactPeopleCount;
 
       if (previousCount != _detectedPeopleCount) {
         _recomputeContextVector();
@@ -83,6 +92,8 @@ class ContextFrameScheduler extends ChangeNotifier {
     }
 
     final pose = poses.first;
+    final leftShoulder = pose.landmarks[PoseLandmarkType.leftShoulder];
+    final rightShoulder = pose.landmarks[PoseLandmarkType.rightShoulder];
     final leftHip = pose.landmarks[PoseLandmarkType.leftHip];
     final leftKnee = pose.landmarks[PoseLandmarkType.leftKnee];
     final leftAnkle = pose.landmarks[PoseLandmarkType.leftAnkle];
@@ -91,20 +102,55 @@ class ContextFrameScheduler extends ChangeNotifier {
     final rightKnee = pose.landmarks[PoseLandmarkType.rightKnee];
     final rightAnkle = pose.landmarks[PoseLandmarkType.rightAnkle];
 
+    if (leftShoulder != null && rightShoulder != null &&
+        leftShoulder.likelihood > 0.4 && rightShoulder.likelihood > 0.4) {
+      _shoulderWidthNorm = (rightShoulder.x - leftShoulder.x).abs();
+    }
+
+    if (leftShoulder != null && rightShoulder != null && leftHip != null && rightHip != null) {
+      final double shoulderY = (leftShoulder.y + rightShoulder.y) / 2.0;
+      final double hipY = (leftHip.y + rightHip.y) / 2.0;
+      _torsoHeightNorm = (hipY - shoulderY).abs();
+    }
+
+    _isLegsVisible = (leftAnkle != null && leftAnkle.likelihood > 0.4) ||
+        (rightAnkle != null && rightAnkle.likelihood > 0.4);
+
+    _isSelfieComposition = _isFrontCamera || (_shoulderWidthNorm > 0.22 && !_isLegsVisible);
+
     StanceType detectedStance = StanceType.standing;
 
     if (leftHip != null && leftKnee != null && leftAnkle != null &&
         leftHip.likelihood > 0.5 && leftKnee.likelihood > 0.5) {
       final double kneeAngle = _calculate2DAngle(leftHip, leftKnee, leftAnkle);
+      _kneeAngleNorm = (kneeAngle / 180.0).clamp(0.0, 1.0);
       if (kneeAngle < 125.0) {
         detectedStance = StanceType.sitting;
       }
     } else if (rightHip != null && rightKnee != null && rightAnkle != null &&
         rightHip.likelihood > 0.5 && rightKnee.likelihood > 0.5) {
       final double kneeAngle = _calculate2DAngle(rightHip, rightKnee, rightAnkle);
+      _kneeAngleNorm = (kneeAngle / 180.0).clamp(0.0, 1.0);
       if (kneeAngle < 125.0) {
         detectedStance = StanceType.sitting;
       }
+    }
+
+    if (leftShoulder != null && leftHip != null && leftKnee != null &&
+        leftShoulder.likelihood > 0.4 && leftHip.likelihood > 0.4) {
+      final double hipAngle = _calculate2DAngle(leftShoulder, leftHip, leftKnee);
+      _hipAngleNorm = (hipAngle / 180.0).clamp(0.0, 1.0);
+    }
+
+    if (poses.length >= 2) {
+      final p1 = poses[0].landmarks[PoseLandmarkType.nose];
+      final p2 = poses[1].landmarks[PoseLandmarkType.nose];
+      if (p1 != null && p2 != null) {
+        final dist = (p1.x - p2.x).abs();
+        _interPersonProximity = (1.0 - dist).clamp(0.0, 1.0);
+      }
+    } else {
+      _interPersonProximity = 0.0;
     }
 
     if (detectedStance != _currentStance) {
@@ -149,11 +195,22 @@ class ContextFrameScheduler extends ChangeNotifier {
       propIndex: _detectedPropIndex,
       peopleCount: _detectedPeopleCount,
       isFrontCamera: _isFrontCamera,
+      isSelfieComposition: _isSelfieComposition,
+      shoulderWidthNorm: _shoulderWidthNorm,
+      torsoHeightNorm: _torsoHeightNorm,
+      isSitting: _currentStance == StanceType.sitting,
+      isStanding: _currentStance == StanceType.standing,
+      isLegsVisible: _isLegsVisible,
+      kneeAngleNorm: _kneeAngleNorm,
+      hipAngleNorm: _hipAngleNorm,
+      interPersonProximity: _interPersonProximity,
     );
 
-    // If weights are loaded, generate novel real-time target pose
-    if (_recommender.isInitialized) {
+    // If weights are loaded and at least 1 person is detected, generate novel real-time target pose
+    if (_recommender.isInitialized && _detectedPeopleCount > 0) {
       _neuralGeneratedPose = _recommender.generatePoseFromContext(_currentContextVector);
+    } else {
+      _neuralGeneratedPose = null;
     }
   }
 

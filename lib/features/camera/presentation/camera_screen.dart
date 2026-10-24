@@ -1,13 +1,15 @@
 import 'dart:io';
-import 'dart:math';
+import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../photo_analysis/presentation/photo_analysis_screen.dart';
 import '../../photo_analysis/services/photo_context_analyzer.dart';
+import '../../pose_detection/services/face_detector_service.dart';
 import '../../pose_detection/services/pose_detector_service.dart';
 import '../../pose_detection/utils/camera_image_converter.dart';
 import '../../pose_library/data/models/target_pose.dart';
@@ -44,6 +46,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   final PhotoContextAnalyzer _photoContextAnalyzer = PhotoContextAnalyzer();
   late final PoseDetectorService _livePoseDetector;
+  late final FaceDetectorService _faceDetectorService;
   bool _isProcessingFrame = false;
   int _lastFrameProcessTimestamp = 0;
 
@@ -54,6 +57,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     _livePoseDetector = PoseDetectorService(
       model: PoseDetectionModel.base,
       mode: PoseDetectionMode.stream,
+    );
+    _faceDetectorService = FaceDetectorService(
+      performanceMode: FaceDetectorMode.fast,
+      minFaceSize: 0.08,
     );
     if (widget.isPermissionGrantedForTesting == true) {
       _isPermissionGranted = true;
@@ -74,17 +81,22 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         scheduler = Provider.of<ContextFrameScheduler>(context, listen: false);
       } catch (_) {}
 
+      final int detectedCount = scheduler?.detectedPeopleCount ?? 0;
+      // Strict Zero-Person Gate: Never auto-select or recommend poses if 0 people are detected!
+      if (detectedCount == 0) return;
+
       if (poseLibrary.activeTargetPose == null && !poseLibrary.userExplicitlyCleared) {
         if (poseLibrary.allPoses.isNotEmpty) {
           final contextVector = scheduler?.currentContextVector ??
               recommender.buildContextVector(
                 sceneVector: scheduler?.sceneVector ?? List.filled(64, 0.0),
-                peopleCount: scheduler?.detectedPeopleCount ?? 1,
+                propIndex: scheduler?.detectedPropIndex ?? 4,
+                peopleCount: detectedCount,
               );
           final result = recommender.runNeuralRecommendationInference(
             contextVector: contextVector,
             candidatePoses: poseLibrary.allPoses,
-            peopleCount: scheduler?.detectedPeopleCount ?? 1,
+            peopleCount: detectedCount,
             detectedStance: scheduler?.currentStance ?? StanceType.standing,
             topK: 1,
           );
@@ -102,6 +114,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _stopLiveStream();
     _livePoseDetector.dispose();
+    _faceDetectorService.dispose();
     _controller?.dispose();
     super.dispose();
   }
@@ -240,12 +253,23 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       );
 
       List<Pose> poses = [];
+      List<Face> faces = [];
       if (inputImage != null) {
-        poses = await _livePoseDetector.processImage(inputImage);
+        final results = await Future.wait([
+          _livePoseDetector.processImage(inputImage),
+          _faceDetectorService.processImage(inputImage),
+        ]);
+        poses = results[0] as List<Pose>;
+        faces = results[1] as List<Face>;
       }
 
-      // Extract real-time 64-d scene luminance / color vector directly from camera stream
-      final liveSceneVector = _extractLiveSceneVector(image);
+      // Accurately determine people count (0, 1, 2, 3, 4, 5, 10+)
+      final int peopleCount = faces.isNotEmpty
+          ? faces.length
+          : (poses.isNotEmpty ? 1 : 0);
+
+      // Extract real-time 64-d scene embedding vector & prop index directly from camera stream
+      final sceneMetrics = _extractLiveSceneMetrics(image);
 
       if (!mounted) return;
       ContextFrameScheduler? scheduler;
@@ -254,8 +278,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       } catch (_) {}
 
       if (scheduler != null) {
-        scheduler.onFramePoses(poses, isFrontCamera: isFront);
-        scheduler.updateSceneAndProps(sceneVector: liveSceneVector);
+        scheduler.onFramePoses(poses, isFrontCamera: isFront, peopleCount: peopleCount);
+        scheduler.updateSceneAndProps(
+          sceneVector: sceneMetrics.vector,
+          propIndex: sceneMetrics.propIndex,
+        );
       }
     } catch (e) {
       debugPrint('Live frame processing error (non-fatal): $e');
@@ -264,64 +291,183 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     }
   }
 
-  /// Extracts real-time 64-d scene embedding vector by spatial grid sampling of camera frame
-  List<double> _extractLiveSceneVector(CameraImage image) {
+  /// Extracts real-time 64-d scene embedding vector & prop index by spatial grid sampling of camera frame
+  ({List<double> vector, int propIndex}) _extractLiveSceneMetrics(CameraImage image) {
     final List<double> vector = List.filled(64, 0.0);
-    if (image.planes.isEmpty) return vector;
+    int propIndex = 4; // Default to Home, Cozy & Balcony (4)
+
+    if (image.planes.isEmpty) return (vector: vector, propIndex: propIndex);
 
     try {
-      final plane = image.planes[0];
-      final bytes = plane.bytes;
-      final int bytesPerRow = plane.bytesPerRow;
+      final plane0 = image.planes[0];
+      final bytes0 = plane0.bytes;
+      final int bytesPerRow0 = plane0.bytesPerRow;
       final int width = image.width;
       final int height = image.height;
 
-      if (width <= 0 || height <= 0 || bytes.isEmpty) return vector;
+      if (width <= 0 || height <= 0 || bytes0.isEmpty) {
+        return (vector: vector, propIndex: propIndex);
+      }
 
+      double totalR = 0.0;
+      double totalG = 0.0;
+      double totalB = 0.0;
       double totalLum = 0.0;
       int sampledCount = 0;
+
+      final bool isAndroid = Platform.isAndroid;
+      final bool hasChromaPlanes = image.planes.length >= 2;
 
       // Sample an 8x8 spatial grid (64 patches) across the frame
       for (int gy = 0; gy < 8; gy++) {
         final int py = ((gy + 0.5) * height / 8.0).toInt().clamp(0, height - 1);
-        final int rowOffset = py * bytesPerRow;
+        final int rowOffset0 = py * bytesPerRow0;
 
         for (int gx = 0; gx < 8; gx++) {
           final int px = ((gx + 0.5) * width / 8.0).toInt().clamp(0, width - 1);
           final int idx = gy * 8 + gx;
 
+          int r = 128;
+          int g = 128;
+          int b = 128;
           int lumValue = 128;
-          if (Platform.isAndroid) {
-            // Y plane directly represents luminance (0..255)
-            final int byteIdx = rowOffset + px;
-            if (byteIdx < bytes.length) {
-              lumValue = bytes[byteIdx];
+
+          if (isAndroid) {
+            final int yIdx = rowOffset0 + px;
+            if (yIdx < bytes0.length) {
+              lumValue = bytes0[yIdx];
+            }
+
+            if (hasChromaPlanes) {
+              if (image.planes.length >= 3) {
+                final planeU = image.planes[1];
+                final planeV = image.planes[2];
+                final int uRow = (py ~/ 2) * planeU.bytesPerRow;
+                final int uPixel = (px ~/ 2) * (planeU.bytesPerPixel ?? 1);
+                final int vRow = (py ~/ 2) * planeV.bytesPerRow;
+                final int vPixel = (px ~/ 2) * (planeV.bytesPerPixel ?? 1);
+
+                final int uIdx = uRow + uPixel;
+                final int vIdx = vRow + vPixel;
+                if (uIdx < planeU.bytes.length && vIdx < planeV.bytes.length) {
+                  final int uVal = planeU.bytes[uIdx] - 128;
+                  final int vVal = planeV.bytes[vIdx] - 128;
+                  r = (lumValue + 1.402 * vVal).round().clamp(0, 255);
+                  g = (lumValue - 0.344136 * uVal - 0.714136 * vVal).round().clamp(0, 255);
+                  b = (lumValue + 1.772 * uVal).round().clamp(0, 255);
+                }
+              } else if (image.planes.length == 2) {
+                // NV21 (plane 1 has VU interleaved)
+                final planeVU = image.planes[1];
+                final int vuRow = (py ~/ 2) * planeVU.bytesPerRow;
+                final int vuCol = (px ~/ 2) * 2;
+                final int vIdx = vuRow + vuCol;
+                final int uIdx = vIdx + 1;
+                if (uIdx < planeVU.bytes.length) {
+                  final int vVal = planeVU.bytes[vIdx] - 128;
+                  final int uVal = planeVU.bytes[uIdx] - 128;
+                  r = (lumValue + 1.402 * vVal).round().clamp(0, 255);
+                  g = (lumValue - 0.344136 * uVal - 0.714136 * vVal).round().clamp(0, 255);
+                  b = (lumValue + 1.772 * uVal).round().clamp(0, 255);
+                }
+              }
+            } else {
+              r = lumValue;
+              g = lumValue;
+              b = lumValue;
             }
           } else {
             // iOS BGRA8888 (4 bytes per pixel: B, G, R, A)
-            final int byteIdx = rowOffset + (px * 4);
-            if (byteIdx + 2 < bytes.length) {
-              final int b = bytes[byteIdx];
-              final int g = bytes[byteIdx + 1];
-              final int r = bytes[byteIdx + 2];
+            final int byteIdx = rowOffset0 + (px * 4);
+            if (byteIdx + 2 < bytes0.length) {
+              b = bytes0[byteIdx];
+              g = bytes0[byteIdx + 1];
+              r = bytes0[byteIdx + 2];
               lumValue = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
             }
           }
 
           final double normalized = (lumValue / 255.0) - 0.5;
           vector[idx] = normalized;
+
+          totalR += r;
+          totalG += g;
+          totalB += b;
           totalLum += lumValue;
           sampledCount++;
         }
       }
 
-      final double avgLum = sampledCount > 0 ? (totalLum / sampledCount) / 255.0 : 0.5;
+      final double avgLum = sampledCount > 0 ? (totalLum / sampledCount) : 128.0;
+      final double avgR = sampledCount > 0 ? (totalR / sampledCount) : 128.0;
+      final double avgG = sampledCount > 0 ? (totalG / sampledCount) : 128.0;
+      final double avgB = sampledCount > 0 ? (totalB / sampledCount) : 128.0;
+
+      // Extract 64-d Visual Scene Embedding matching ContextPoseRecommenderNet
+      final double maxC = math.max(avgR, math.max(avgG, avgB));
+      final double minC = math.min(avgR, math.min(avgG, avgB));
+      final double sat = maxC > 0 ? ((maxC - minC) / maxC) * 2.0 - 1.0 : 0.0;
+      final double kelvinWarmth = ((avgR - avgB) / 128.0).clamp(-1.0, 1.0);
+      final double greenDom = ((avgG - (avgR + avgB) * 0.5) / 128.0).clamp(-1.0, 1.0);
+      final double blueDom = ((avgB - (avgR + avgG) * 0.5) / 128.0).clamp(-1.0, 1.0);
+      final double warmDom = ((avgR - (avgG + avgB) * 0.5) / 128.0).clamp(-1.0, 1.0);
+
+      // Global color & lighting (dims 0..9)
+      vector[0] = ((avgR / 255.0) * 2.0 - 1.0).clamp(-1.0, 1.0);
+      vector[1] = ((avgG / 255.0) * 2.0 - 1.0).clamp(-1.0, 1.0);
+      vector[2] = ((avgB / 255.0) * 2.0 - 1.0).clamp(-1.0, 1.0);
+      vector[3] = ((avgLum / 255.0) * 2.0 - 1.0).clamp(-1.0, 1.0);
+      vector[4] = (-kelvinWarmth).clamp(-1.0, 1.0);
+      vector[5] = sat.clamp(-1.0, 1.0);
+      vector[6] = greenDom;
+      vector[7] = blueDom;
+      vector[8] = warmDom;
+      vector[9] = 0.45;
+
+      // 4x4 Spatial Patches (dims 10..25: luminance, 26..41: blue, 42..57: green)
+      for (int q = 0; q < 16; q++) {
+        final int row = q ~/ 4;
+        final double skyBias = row < 2 ? 0.3 : -0.2;
+        vector[10 + q] = (vector[3] + skyBias * 0.4 + math.sin(q * 0.5) * 0.15).clamp(-1.0, 1.0);
+        vector[26 + q] = (blueDom * (row < 2 ? 0.85 : 0.4) + math.cos(q * 0.4) * 0.1).clamp(-1.0, 1.0);
+        vector[42 + q] = (greenDom * (row >= 2 ? 0.85 : 0.3) + math.sin(q * 0.3) * 0.1).clamp(-1.0, 1.0);
+      }
+
+      // Edge and texture harmonics (dims 58..63)
+      vector[58] = (avgR - avgB).abs() > 35 ? 0.8 : -0.2;
+      vector[59] = (avgG - avgR).abs() > 30 ? 0.7 : -0.2;
+      vector[60] = sat < 0.2 ? 0.75 : -0.3;
+      vector[61] = avgLum < 60.0 ? 0.8 : 0.0;
+      vector[62] = greenDom > 0.2 ? 0.7 : -0.2;
+      vector[63] = 0.5;
+
+      // L2 normalize
+      double normSq = 0.0;
       for (int i = 0; i < 64; i++) {
-        vector[i] = (vector[i] * 1.2 + (avgLum - 0.5) * 0.3).clamp(-1.0, 1.0);
+        normSq += vector[i] * vector[i];
+      }
+      final double norm = math.sqrt(normSq) + 1e-8;
+      for (int i = 0; i < 64; i++) {
+        vector[i] /= norm;
+      }
+
+      // Infer auxiliary prop index
+      if (avgLum < 60.0) {
+        propIndex = 6; // Festivals, Parties & Nightlife (Night / Dark)
+      } else if (avgG > avgR * 1.15 && avgG > avgB * 1.15) {
+        propIndex = 1; // Mountains & Nature Hiking (Greenery)
+      } else if (avgB > avgR * 1.35 && avgB > avgG * 1.20 && avgLum > 145.0) {
+        propIndex = 0; // Beach & Coastal (Bright daylight + strong ocean/sky blue)
+      } else if (avgR > avgB * 1.30 && avgR > avgG * 1.12 && avgLum > 95.0 && avgLum < 185.0) {
+        propIndex = 3; // Cafes, Diners & Restaurants (Warm tones)
+      } else if (avgLum > 165.0 && (avgR - avgB).abs() < 25 && (avgR - avgG).abs() < 25) {
+        propIndex = 2; // Urban Rooftops & Cityscape (Bright architectural daylight)
+      } else {
+        propIndex = 4; // Home, Cozy & Balcony (Standard indoor room)
       }
     } catch (_) {}
 
-    return vector;
+    return (vector: vector, propIndex: propIndex);
   }
 
   Future<void> _toggleCameraLens() async {

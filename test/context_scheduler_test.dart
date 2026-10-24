@@ -32,7 +32,7 @@ void main() {
       scheduler.onFramePoses([pose1, pose2], isFrontCamera: true);
 
       expect(scheduler.detectedPeopleCount, equals(2));
-      expect(scheduler.currentContextVector[75], equals(1.0)); // Duo / Couple one-hot index
+      expect(scheduler.currentContextVector[66], equals(1.0)); // is_duo index
     });
 
     test('Slow pipeline updates scene embedding and prop index', () {
@@ -41,7 +41,7 @@ void main() {
 
       expect(scheduler.detectedPropIndex, equals(5));
       expect(scheduler.sceneVector[0], equals(0.42));
-      expect(scheduler.currentContextVector[64 + 5], equals(1.0)); // Prop index 5 one-hot
+      expect(scheduler.currentContextVector[0], equals(0.42)); // Scene vector updated in context
     });
   });
 }

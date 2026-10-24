@@ -59,9 +59,9 @@ void main() {
 
       expect(contextVec.length, equals(80));
       expect(contextVec[0], equals(0.25));
-      expect(contextVec[64 + 3], equals(1.0));
-      expect(contextVec[75], equals(1.0));
-      expect(contextVec[79], equals(1.0));
+      expect(contextVec[64], equals(0.2)); // people_count_norm = 2 / 10.0
+      expect(contextVec[66], equals(1.0)); // is_duo
+      expect(contextVec[70], equals(1.0)); // is_front_camera
     });
 
     test('computeCosineSimilarity calculates accurate normalized dot product', () {
@@ -108,6 +108,52 @@ void main() {
       );
       expect(scoreSolo, inInclusiveRange(74.0, 96.0));
       expect(scoreSolo, greaterThan(scoreEmpty));
+    });
+
+    test('runNeuralRecommendationInference zero-person gate returns empty', () {
+      final service = PoseRecommendationService();
+      final result = service.runNeuralRecommendationInference(
+        contextVector: List.filled(80, 0.0),
+        candidatePoses: [
+          TargetPose(
+            id: 'p1',
+            name: 'Pose 1',
+            category: 'Standing & Streetwear',
+            description: '',
+            difficulty: 'Easy',
+            keypoints: const [],
+            targetJointAngles: const {},
+            actionTags: const [],
+            silhouetteContour: const [],
+            embedding: List.filled(64, 0.5),
+          ),
+        ],
+        peopleCount: 0,
+      );
+
+      expect(result.recommendedPoses.isEmpty, isTrue);
+      expect(result.predictedCategory, equals('No Person Detected'));
+    });
+
+    test('buildContextVector sets selfie composition and lens mode', () {
+      final service = PoseRecommendationService();
+      final ctx = service.buildContextVector(
+        sceneVector: List.filled(64, 0.1),
+        peopleCount: 1,
+        isFrontCamera: true,
+        isSelfieComposition: true,
+        shoulderWidthNorm: 0.35,
+        isSitting: false,
+        isStanding: false,
+        isLegsVisible: false,
+      );
+
+      expect(ctx[64], equals(0.1)); // people_count_norm
+      expect(ctx[65], equals(1.0)); // is_solo
+      expect(ctx[70], equals(1.0)); // is_front_camera
+      expect(ctx[71], equals(1.0)); // is_selfie_composition
+      expect(ctx[72], equals(0.35)); // shoulder_width_norm
+      expect(ctx[76], equals(0.0)); // is_legs_visible = false
     });
   });
 }

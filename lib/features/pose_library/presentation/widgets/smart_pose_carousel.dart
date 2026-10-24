@@ -13,10 +13,12 @@ import 'pose_thumbnail_card.dart';
 /// plus the on-demand AI Neural Pose Generator.
 class SmartPoseCarousel extends StatefulWidget {
   final List<double>? currentSceneVector;
+  final int? peopleCount;
 
   const SmartPoseCarousel({
     super.key,
     this.currentSceneVector,
+    this.peopleCount,
   });
 
   @override
@@ -222,7 +224,8 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
         scheduler?.sceneVector ??
         List.filled(64, 0.0);
 
-    final int peopleCount = scheduler?.detectedPeopleCount ?? 0;
+    final int peopleCount = widget.peopleCount ?? (scheduler != null ? scheduler.detectedPeopleCount : 1);
+    final int propIndex = scheduler?.detectedPropIndex ?? 4;
     final StanceType stance = scheduler?.currentStance ?? StanceType.standing;
 
     final candidatePoses = poseLibrary.allPoses.isNotEmpty
@@ -232,7 +235,8 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
     final contextVector = scheduler?.currentContextVector ??
         recommender.buildContextVector(
           sceneVector: sceneVector,
-          peopleCount: peopleCount > 0 ? peopleCount : 1,
+          propIndex: propIndex,
+          peopleCount: peopleCount,
           isFrontCamera: scheduler?.isFrontCamera ?? true,
         );
 
@@ -246,13 +250,13 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
 
     List<TargetPose> topRecommendations = List.from(neuralResult.recommendedPoses);
 
-    // If candidate library poses are still loading or empty, dynamically synthesize 3 neural recommendations
-    if (topRecommendations.isEmpty) {
+    // If candidate library poses are still loading and at least 1 person is detected, dynamically synthesize 3 neural recommendations
+    if (peopleCount > 0 && topRecommendations.isEmpty) {
       topRecommendations = recommender.generateDynamicPoseRecommendations(
         baseContextVector: contextVector,
         sceneName: 'Studio & Photography',
         lightingName: 'Natural Daylight',
-        peopleCount: peopleCount > 0 ? peopleCount : 1,
+        peopleCount: peopleCount,
         count: 3,
       );
     }
@@ -263,16 +267,30 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
       topRecommendations.insert(0, activePose);
     }
 
-    // Auto-select top recommendation if none selected and not explicitly cleared by user
-    if (poseLibrary.activeTargetPose == null &&
+    // Auto-select top recommendation ONLY when at least 1 person is detected in view!
+    if (peopleCount > 0 &&
+        poseLibrary.activeTargetPose == null &&
         !poseLibrary.userExplicitlyCleared &&
         topRecommendations.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && poseLibrary.activeTargetPose == null && !poseLibrary.userExplicitlyCleared) {
+        if (mounted &&
+            poseLibrary.activeTargetPose == null &&
+            !poseLibrary.userExplicitlyCleared &&
+            peopleCount > 0) {
           poseLibrary.autoSelectRecommendedPose(topRecommendations.first);
         }
       });
     }
+
+    final String badgeLabel = peopleCount == 0
+        ? 'No Person in View • Point camera at people'
+        : (peopleCount == 1
+            ? '1 Person (Solo) • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)'
+            : (peopleCount == 2
+                ? '2 People (Duo) • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)'
+                : (peopleCount == 3
+                    ? '3 People (Trio) • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)'
+                    : '$peopleCount People (Group) • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)')));
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -305,16 +323,14 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
               children: [
                 Icon(
                   peopleCount == 0
-                      ? Icons.person_outline
+                      ? Icons.person_off_outlined
                       : (peopleCount == 1 ? Icons.person : Icons.group),
                   color: peopleCount > 0 ? AppTheme.primaryCyan : Colors.white70,
                   size: 13,
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  peopleCount == 0
-                      ? 'Point camera at person • ML ready'
-                      : '${peopleCount == 1 ? "1 Person" : "$peopleCount People"} • ML: ${neuralResult.predictedCategory} (${(neuralResult.categoryProbability * 100).toInt()}%)',
+                  badgeLabel,
                   style: TextStyle(
                     color: peopleCount > 0 ? Colors.white : Colors.white70,
                     fontSize: 10.5,
@@ -326,72 +342,138 @@ class _SmartPoseCarouselState extends State<SmartPoseCarousel> {
           ),
         ),
 
-        SizedBox(
-          height: 112,
-          child: Row(
-            children: [
-              Expanded(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: topRecommendations.length,
-                  itemBuilder: (context, index) {
-                    final TargetPose pose = topRecommendations[index];
-                    final bool isSelected = poseLibrary.activeTargetPose?.id == pose.id;
-                    final int matchScore = recommender.calculateDynamicMatchPercentage(
-                      sceneVector: sceneVector,
-                      pose: pose,
-                      peopleCount: peopleCount,
-                      detectedStance: stance,
-                    ).round();
-
-                    return PoseThumbnailCard(
-                      pose: pose,
-                      isSelected: isSelected,
-                      matchScore: matchScore,
-                      onTap: () {
-                        poseLibrary.setCustomActivePose(pose);
-                        _scrollToIndex(index, topRecommendations.length);
-                      },
-                    );
-                  },
-                ),
-              ),
-
-              // Gallery Grid View Trigger Button
-              GestureDetector(
-                onTap: () => _openFullPoseGallery(context, poseLibrary),
-                child: Container(
-                  height: 104,
-                  width: 40,
-                  margin: const EdgeInsets.only(right: 8),
+        if (peopleCount == 0)
+          Container(
+            height: 72,
+            margin: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0F172A).withAlpha(210),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: Colors.black.withAlpha(200),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white24),
+                    color: Colors.white.withAlpha(15),
+                    shape: BoxShape.circle,
                   ),
-                  child: const Column(
+                  child: const Icon(Icons.person_search_outlined, color: AppTheme.primaryCyan, size: 20),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.photo_library_outlined, color: AppTheme.primaryCyan, size: 18),
-                      SizedBox(height: 4),
                       Text(
-                        '12k',
-                        style: TextStyle(color: Colors.white, fontSize: 9.0, fontWeight: FontWeight.bold),
+                        'No Person Detected',
+                        style: TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.bold),
                       ),
+                      SizedBox(height: 2),
                       Text(
-                        'Poses',
-                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 8.0),
+                        'Point camera at 1, 2, 3, or a group of people for ML poses',
+                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 10),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
                 ),
-              ),
-            ],
+                GestureDetector(
+                  onTap: () => _openFullPoseGallery(context, poseLibrary),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryCyan.withAlpha(35),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppTheme.primaryCyan.withAlpha(140)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.photo_library_outlined, color: AppTheme.primaryCyan, size: 13),
+                        SizedBox(width: 4),
+                        Text(
+                          '12k Poses',
+                          style: TextStyle(color: AppTheme.primaryCyan, fontSize: 10.5, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          SizedBox(
+            height: 112,
+            child: Row(
+              children: [
+                Expanded(
+                  child: ListView.builder(
+                    controller: _scrollController,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    itemCount: topRecommendations.length,
+                    itemBuilder: (context, index) {
+                      final TargetPose pose = topRecommendations[index];
+                      final bool isSelected = poseLibrary.activeTargetPose?.id == pose.id;
+                      final int matchScore = recommender.calculateDynamicMatchPercentage(
+                        sceneVector: sceneVector,
+                        pose: pose,
+                        peopleCount: peopleCount,
+                        detectedStance: stance,
+                      ).round();
+
+                      return PoseThumbnailCard(
+                        pose: pose,
+                        isSelected: isSelected,
+                        matchScore: matchScore,
+                        onTap: () {
+                          poseLibrary.setCustomActivePose(pose);
+                          _scrollToIndex(index, topRecommendations.length);
+                        },
+                      );
+                    },
+                  ),
+                ),
+
+                // Gallery Grid View Trigger Button
+                GestureDetector(
+                  onTap: () => _openFullPoseGallery(context, poseLibrary),
+                  child: Container(
+                    height: 104,
+                    width: 40,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(200),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.photo_library_outlined, color: AppTheme.primaryCyan, size: 18),
+                        SizedBox(height: 4),
+                        Text(
+                          '12k',
+                          style: TextStyle(color: Colors.white, fontSize: 9.0, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          'Poses',
+                          style: TextStyle(color: AppTheme.textSecondary, fontSize: 8.0),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
       ],
     );
   }

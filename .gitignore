@@ -10,7 +10,6 @@
 .svn/
 migrated
 dataset_raw/
-
 # IntelliJ-based IDEs
 .idea/
 *.iml
@@ -71,4 +70,4 @@ ios/Pods/
 ios/.symlinks/
 
 # extra 
-.agentsdataset_raw.zip
+.agents

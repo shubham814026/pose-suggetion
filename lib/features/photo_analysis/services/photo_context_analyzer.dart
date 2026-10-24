@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import '../../pose_detection/services/face_detector_service.dart';
 import '../../pose_detection/services/pose_detector_service.dart';
 import '../../pose_library/data/models/target_pose.dart';
 import '../../pose_library/services/pose_library_service.dart';
@@ -13,16 +15,19 @@ import '../models/photo_analysis_result.dart';
 /// people count, posture inference, and 100% dynamic AI neural pose generation.
 class PhotoContextAnalyzer {
   final PoseDetectorService _poseDetectorService;
+  final FaceDetectorService _faceDetectorService;
   final PoseRecommendationService _recommender;
 
   PhotoContextAnalyzer({
     PoseDetectorService? poseDetectorService,
+    FaceDetectorService? faceDetectorService,
     PoseRecommendationService? recommender,
   })  : _poseDetectorService = poseDetectorService ??
             PoseDetectorService(
               model: PoseDetectionModel.accurate,
               mode: PoseDetectionMode.single,
             ),
+        _faceDetectorService = faceDetectorService ?? FaceDetectorService(),
         _recommender = recommender ?? PoseRecommendationService();
 
   /// Analyzes a photo snapshot to extract multi-modal context and synthesize dynamic AI poses.
@@ -48,20 +53,27 @@ class PhotoContextAnalyzer {
       await poseLibrary.loadPoseLibrary();
     }
 
-    // 1. Analyze Visual Lighting & Time of Day / Environment Colors
-    final visualMetrics = _analyzeVisualColors(imageBytes);
+    // 1. Analyze Visual Lighting & Time of Day / Environment Colors using TRUE decoded pixels
+    final visualMetrics = await _analyzeVisualColors(imageBytes);
 
-    // 2. Run High-Accuracy Pose Detection on static image
+    // 2. Run High-Accuracy Multi-Person & Pose Detection on static image
     List<Pose> detectedPoses = [];
+    int peopleCount = 0;
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
+      final faces = await _faceDetectorService.processImage(inputImage);
       detectedPoses = await _poseDetectorService.processImage(inputImage);
-    } catch (e) {
-      debugPrint('Pose detection on static photo error (non-fatal): $e');
-    }
 
-    // Exact Detected Person Count (0 if empty scene, 1 for solo, 2 for duo, etc.)
-    final int peopleCount = detectedPoses.length;
+      if (faces.isNotEmpty) {
+        peopleCount = faces.length;
+      } else if (detectedPoses.isNotEmpty) {
+        peopleCount = 1;
+      } else {
+        peopleCount = 0;
+      }
+    } catch (e) {
+      debugPrint('Person detection on photo error (non-fatal): $e');
+    }
 
     // 3. Stance Detection from detected keypoints
     final StanceType stanceType = _inferStance(detectedPoses);
@@ -74,13 +86,88 @@ class PhotoContextAnalyzer {
     // 5. Synthesize 64-d Scene Embedding Vector
     final List<double> sceneVector = _buildSceneVector(visualMetrics, scene, lighting);
 
-    // 6. Build Full 80-d Conditioning Vector for ContextPoseNet
+    // Strict Zero-Person Gate: If 0 people are detected, return empty recommendations
+    if (peopleCount == 0) {
+      return PhotoAnalysisResult(
+        imagePath: imagePath,
+        lightingType: lighting.$1,
+        lightingName: lighting.$2,
+        lightingEmoji: lighting.$3,
+        sceneType: scene.$1,
+        sceneName: scene.$2,
+        sceneEmoji: scene.$3,
+        peopleCount: 0,
+        stanceType: StanceType.unknown,
+        occasionVibe: 'Empty Scene (No Person Detected)',
+        detectedPoses: const [],
+        contextVector: List.filled(80, 0.0),
+        sceneVector: sceneVector,
+        aiSynthesizedPose: null,
+        recommendedPoses: const [],
+        averageLuminance: visualMetrics.avgLuminance,
+        colorTemperatureK: visualMetrics.estimatedKelvin,
+        predictedCategory: 'No Person Detected',
+        categoryProbability: 0.0,
+        neuralConfidenceScore: 0.0,
+        inferenceTimeMs: 1,
+      );
+    }
+
+    // 6. Extract keypoint geometry metrics from detected poses
+    double shoulderWidthNorm = 0.16;
+    double torsoHeightNorm = 0.40;
+    bool isLegsVisible = true;
+    double kneeAngleNorm = 0.95;
+    double hipAngleNorm = 0.95;
+
+    if (detectedPoses.isNotEmpty) {
+      final pose = detectedPoses.first;
+      final ls = pose.landmarks[PoseLandmarkType.leftShoulder];
+      final rs = pose.landmarks[PoseLandmarkType.rightShoulder];
+      final lh = pose.landmarks[PoseLandmarkType.leftHip];
+      final rh = pose.landmarks[PoseLandmarkType.rightHip];
+      final lk = pose.landmarks[PoseLandmarkType.leftKnee];
+      final rk = pose.landmarks[PoseLandmarkType.rightKnee];
+      final la = pose.landmarks[PoseLandmarkType.leftAnkle];
+      final ra = pose.landmarks[PoseLandmarkType.rightAnkle];
+
+      if (ls != null && rs != null) {
+        shoulderWidthNorm = (rs.x - ls.x).abs();
+      }
+      if (ls != null && rs != null && lh != null && rh != null) {
+        torsoHeightNorm = (((lh.y + rh.y) / 2.0) - ((ls.y + rs.y) / 2.0)).abs();
+      }
+      isLegsVisible = (la != null && la.likelihood > 0.4) || (ra != null && ra.likelihood > 0.4);
+      if (lh != null && lk != null && la != null) {
+        final double kneeAngle = _calculateAngle(lh, lk, la);
+        kneeAngleNorm = (kneeAngle / 180.0).clamp(0.0, 1.0);
+      } else if (rh != null && rk != null && ra != null) {
+        final double kneeAngle = _calculateAngle(rh, rk, ra);
+        kneeAngleNorm = (kneeAngle / 180.0).clamp(0.0, 1.0);
+      }
+      if (ls != null && lh != null && lk != null) {
+        final double hipAngle = _calculateAngle(ls, lh, lk);
+        hipAngleNorm = (hipAngle / 180.0).clamp(0.0, 1.0);
+      }
+    }
+
+    final bool isSelfie = isFrontCamera || (shoulderWidthNorm > 0.22 && !isLegsVisible);
+
+    // Build Full 80-d Conditioning Vector for ContextPoseRecommenderNet
     final int propIndex = _inferPropIndex(scene);
     final List<double> contextVector = _recommender.buildContextVector(
       sceneVector: sceneVector,
       propIndex: propIndex,
-      peopleCount: math.max(1, peopleCount),
+      peopleCount: peopleCount,
       isFrontCamera: isFrontCamera,
+      isSelfieComposition: isSelfie,
+      shoulderWidthNorm: shoulderWidthNorm,
+      torsoHeightNorm: torsoHeightNorm,
+      isSitting: stanceType == StanceType.sitting,
+      isStanding: stanceType == StanceType.standing,
+      isLegsVisible: isLegsVisible,
+      kneeAngleNorm: kneeAngleNorm,
+      hipAngleNorm: hipAngleNorm,
     );
 
     // 7. Execute On-Device Neural Model (ContextPoseRecommenderNet) to predict & rank Top 3 photos
@@ -96,17 +183,21 @@ class PhotoContextAnalyzer {
       topK: 3,
     );
 
-    List<TargetPose> suggestedPhotos = neuralResult.recommendedPoses;
+    List<TargetPose> suggestedPhotos = List.from(neuralResult.recommendedPoses);
 
-    // Fallback if candidate poses are empty
-    if (suggestedPhotos.isEmpty) {
-      suggestedPhotos = _recommender.generateDynamicPoseRecommendations(
-        baseContextVector: contextVector,
-        sceneName: scene.$2,
-        lightingName: lighting.$2,
-        peopleCount: peopleCount,
-        count: 3,
-      );
+    // Fallback if candidate poses are empty and at least 1 person is detected
+    if (suggestedPhotos.isEmpty && candidatePoses.isNotEmpty && peopleCount > 0) {
+      final filteredCandidates = _recommender.filterPosesByPeopleCount(candidatePoses, peopleCount);
+      suggestedPhotos = filteredCandidates.take(3).toList();
+      if (suggestedPhotos.isEmpty) {
+        suggestedPhotos = _recommender.generateDynamicPoseRecommendations(
+          baseContextVector: contextVector,
+          sceneName: scene.$2,
+          lightingName: lighting.$2,
+          peopleCount: peopleCount,
+          count: 3,
+        );
+      }
     }
 
     return PhotoAnalysisResult(
@@ -134,70 +225,75 @@ class PhotoContextAnalyzer {
     );
   }
 
-  /// Extracts color luminance, RGB ratios, saturation and chromatic distribution.
-  _VisualColorMetrics _analyzeVisualColors(Uint8List bytes) {
+  /// Extracts color luminance, RGB ratios, saturation and chromatic distribution using decoded RGBA pixels.
+  Future<_VisualColorMetrics> _analyzeVisualColors(Uint8List bytes) async {
     if (bytes.length < 54) {
       return _VisualColorMetrics.defaults();
     }
 
-    double totalR = 0;
-    double totalG = 0;
-    double totalB = 0;
-    double totalLum = 0;
-    double totalSat = 0;
-    int samples = 0;
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64, targetHeight: 64);
+      final frameInfo = await codec.getNextFrame();
+      final image = frameInfo.image;
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      image.dispose();
 
-    // Subsample bytes to ensure fast execution (< 15ms) even on large 12MP photos
-    final int step = math.max(1, (bytes.length ~/ 8000));
-    final int end = bytes.length - 3;
+      if (byteData == null) return _VisualColorMetrics.defaults();
+      final Uint8List pixels = byteData.buffer.asUint8List();
 
-    for (int i = 0; i < end; i += step) {
-      final int b = bytes[i];
-      final int g = bytes[i + 1];
-      final int r = bytes[i + 2];
+      double totalR = 0, totalG = 0, totalB = 0, totalLum = 0, totalSat = 0;
+      int samples = 0;
 
-      final double lum = (0.299 * r) + (0.587 * g) + (0.114 * b);
-      final double maxC = math.max(r, math.max(g, b)).toDouble();
-      final double minC = math.min(r, math.min(g, b)).toDouble();
-      final double sat = maxC > 0 ? (maxC - minC) / maxC : 0.0;
+      for (int i = 0; i < pixels.length - 3; i += 4) {
+        final int r = pixels[i];
+        final int g = pixels[i + 1];
+        final int b = pixels[i + 2];
 
-      totalR += r;
-      totalG += g;
-      totalB += b;
-      totalLum += lum;
-      totalSat += sat;
-      samples++;
-    }
+        final double lum = (0.299 * r) + (0.587 * g) + (0.114 * b);
+        final double maxC = math.max(r, math.max(g, b)).toDouble();
+        final double minC = math.min(r, math.min(g, b)).toDouble();
+        final double sat = maxC > 0 ? (maxC - minC) / maxC : 0.0;
 
-    if (samples == 0) return _VisualColorMetrics.defaults();
-
-    final double avgR = totalR / samples;
-    final double avgG = totalG / samples;
-    final double avgB = totalB / samples;
-    final double avgLum = totalLum / samples;
-    final double avgSat = totalSat / samples;
-
-    // Calculate estimated color temperature (Kelvin)
-    double kelvin = 5500.0;
-    if (avgB > 0) {
-      final double rbRatio = avgR / avgB;
-      if (rbRatio > 1.45) {
-        kelvin = 2800.0 + (1.45 / rbRatio) * 1200.0; // Warm amber (Sunset/Golden Hour/Candle)
-      } else if (rbRatio < 0.78) {
-        kelvin = 7200.0 + (1.0 - rbRatio) * 2800.0; // Cool blue (Dusk/Overcast)
-      } else {
-        kelvin = 5000.0 + (1.0 - (rbRatio - 1.0)) * 1000.0; // Daylight
+        totalR += r;
+        totalG += g;
+        totalB += b;
+        totalLum += lum;
+        totalSat += sat;
+        samples++;
       }
-    }
 
-    return _VisualColorMetrics(
-      avgR: avgR,
-      avgG: avgG,
-      avgB: avgB,
-      avgLuminance: avgLum,
-      avgSaturation: avgSat,
-      estimatedKelvin: kelvin.clamp(2500.0, 10000.0),
-    );
+      if (samples == 0) return _VisualColorMetrics.defaults();
+
+      final double avgR = totalR / samples;
+      final double avgG = totalG / samples;
+      final double avgB = totalB / samples;
+      final double avgLum = totalLum / samples;
+      final double avgSat = totalSat / samples;
+
+      double kelvin = 5500.0;
+      if (avgB > 0) {
+        final double rbRatio = avgR / avgB;
+        if (rbRatio > 1.30) {
+          kelvin = 2800.0 + (1.30 / rbRatio) * 1200.0;
+        } else if (rbRatio < 0.85) {
+          kelvin = 7200.0 + (1.0 - rbRatio) * 2800.0;
+        } else {
+          kelvin = 5000.0 + (1.0 - (rbRatio - 1.0)) * 1000.0;
+        }
+      }
+
+      return _VisualColorMetrics(
+        avgR: avgR,
+        avgG: avgG,
+        avgB: avgB,
+        avgLuminance: avgLum,
+        avgSaturation: avgSat,
+        estimatedKelvin: kelvin.clamp(2500.0, 10000.0),
+      );
+    } catch (e) {
+      debugPrint('Native image pixel decode notice: $e');
+      return _VisualColorMetrics.defaults();
+    }
   }
 
   /// Classifies lighting condition & time of day based on chromaticity & luminance
@@ -260,51 +356,54 @@ class PhotoContextAnalyzer {
     final lum = metrics.avgLuminance;
     final sat = metrics.avgSaturation;
 
-    // Nature / Forest / Garden (Green dominance)
-    if (g > r * 1.12 && g > b * 1.10) {
-      if (lum > 130.0 && sat > 0.40) {
-        return (SceneType.gardenFloral, 'Garden & Floral Landscape', '🌸');
+    // 1. Extreme Night / Low-light
+    if (lum < 55.0) {
+      if (sat > 0.40) {
+        return (SceneType.festivalEvent, 'Festivals, Parties & Nightlife', '🎉');
       }
-      return (SceneType.naturePark, 'Nature, Forest & Park', '🌲');
+      return (SceneType.indoorLiving, 'Home, Cozy & Balcony', '🏡');
     }
 
-    // Beach / Coastal / Poolside (Blue dominance + High luminance)
-    if (b > r * 1.15 && lum > 115.0) {
-      if (sat > 0.35 && lum > 135.0) {
-        return (SceneType.poolsideResort, 'Poolside & Resort', '🏊');
+    // 2. Nature / Forest / Garden (Green dominance)
+    if (g > r * 1.08 && g > b * 1.06 && sat > 0.18) {
+      if (lum > 130.0 && sat > 0.35) {
+        return (SceneType.gardenFloral, 'Garden & Outdoor Park', '🌸');
       }
-      if (metrics.estimatedKelvin < 6500.0) {
-        return (SceneType.beach, 'Beach & Coastal Shoreline', '🏖️');
-      }
-      return (SceneType.mountainScenic, 'Mountain & Panoramic Vista', '⛰️');
+      return (SceneType.naturePark, 'Mountains & Nature Hiking', '⛰️');
     }
 
-    // Cafe & Restaurant / Dining (Warm ambient, medium luminance)
-    if (r > b * 1.25 && lum >= 60.0 && lum <= 140.0) {
-      if (lum < 95.0) {
-        return (SceneType.indoorLiving, 'Cozy Living & Interior', '🛋️');
-      }
-      return (SceneType.cafeRestaurant, 'Cafe, Dining & Coffee Vibe', '☕');
+    // 3. Genuine Beach & Coastal (High Blue dominance + High daylight luminance + Sky/Ocean)
+    // Avoid false positives: Must have high blue compared to BOTH red AND green, and bright daylight!
+    if (b > r * 1.30 && b > g * 1.15 && lum > 140.0 && sat > 0.28) {
+      return (SceneType.beach, 'Beach & Coastal', '🏖️');
     }
 
-    // Studio Minimal / Museum (Neutral grayscale, low saturation)
-    if (sat < 0.16) {
+    // 4. Warm Indoor / Living Room / Dining / Cafe
+    if (r > b * 1.20 && lum >= 55.0 && lum <= 150.0) {
+      if (lum < 95.0 || sat < 0.22) {
+        return (SceneType.indoorLiving, 'Home, Cozy & Balcony', '🛋️');
+      }
+      return (SceneType.cafeRestaurant, 'Cafes, Diners & Restaurants', '☕');
+    }
+
+    // 5. Studio Minimal / Clean Wall / Office (Low saturation, neutral tones)
+    if (sat < 0.18) {
       if (lum > 140.0) {
         return (SceneType.studioMinimal, 'Minimalist Studio / Clean Wall', '🏛️');
-      } else if (lum > 90.0) {
-        return (SceneType.museumGallery, 'Museum & Modern Architecture', '🎨');
-      } else {
+      } else if (lum > 85.0) {
         return (SceneType.officeWorkspace, 'Modern Workspace & Office', '💼');
+      } else {
+        return (SceneType.museumGallery, 'Museum & Modern Architecture', '🎨');
       }
     }
 
-    // Rooftop / City Skyline
-    if (lum > 120.0 && b > r * 1.05) {
-      return (SceneType.rooftopSkyline, 'Rooftop & City Skyline', '🏙️');
+    // 6. Rooftop / City Skyline
+    if (lum > 130.0 && b > r * 1.08) {
+      return (SceneType.rooftopSkyline, 'Urban Rooftops & Cityscape', '🏙️');
     }
 
-    // Urban Street default
-    return (SceneType.urbanCity, 'Urban Street & City Architecture', '🌆');
+    // 7. General Urban Street Architecture default
+    return (SceneType.urbanCity, 'Standing & Streetwear', '👟');
   }
 
   /// Derives posture stance from detected ML Kit pose keypoints
@@ -328,6 +427,16 @@ class PhotoContextAnalyzer {
     } catch (_) {}
 
     return StanceType.standing;
+  }
+
+  /// Calculates 2D interior joint angle in degrees
+  double _calculateAngle(PoseLandmark a, PoseLandmark b, PoseLandmark c) {
+    final double radians = math.atan2(c.y - b.y, c.x - b.x) - math.atan2(a.y - b.y, a.x - b.x);
+    double angle = (radians * 180.0 / math.pi).abs();
+    if (angle > 180.0) {
+      angle = 360.0 - angle;
+    }
+    return angle;
   }
 
   /// Builds natural language occasion vibe description
@@ -363,7 +472,7 @@ class PhotoContextAnalyzer {
     }
   }
 
-  /// Synthesizes 64-d Scene Embedding Vector representing the environment
+  /// Synthesizes continuous 64-d Scene Embedding Vector representing the environment
   List<double> _buildSceneVector(
     _VisualColorMetrics metrics,
     (SceneType, String, String) scene,
@@ -371,29 +480,46 @@ class PhotoContextAnalyzer {
   ) {
     final vector = List<double>.filled(64, 0.0);
 
-    // Encode normalized color features
+    // Global color & lighting (dims 0..9)
     vector[0] = (metrics.avgR / 255.0) * 2.0 - 1.0;
     vector[1] = (metrics.avgG / 255.0) * 2.0 - 1.0;
     vector[2] = (metrics.avgB / 255.0) * 2.0 - 1.0;
     vector[3] = (metrics.avgLuminance / 255.0) * 2.0 - 1.0;
     vector[4] = ((metrics.estimatedKelvin - 5500.0) / 4500.0).clamp(-1.0, 1.0);
     vector[5] = (metrics.avgSaturation * 2.0) - 1.0;
+    vector[6] = ((metrics.avgG - (metrics.avgR + metrics.avgB) * 0.5) / 128.0).clamp(-1.0, 1.0);
+    vector[7] = ((metrics.avgB - (metrics.avgR + metrics.avgG) * 0.5) / 128.0).clamp(-1.0, 1.0);
+    vector[8] = ((metrics.avgR - (metrics.avgG + metrics.avgB) * 0.5) / 128.0).clamp(-1.0, 1.0);
+    vector[9] = 0.45;
 
-    // Encode scene one-hot basis in dims 10..26
-    final sceneIndex = scene.$1.index;
-    if (sceneIndex < 17) {
-      vector[10 + sceneIndex] = 1.0;
+    final double blueDom = vector[7];
+    final double greenDom = vector[6];
+
+    // 4x4 Spatial Quadrants (dims 10..25: luminance, 26..41: blue-vs-red, 42..57: green-vs-red)
+    for (int q = 0; q < 16; q++) {
+      final int row = q ~/ 4;
+      final double skyBias = row < 2 ? 0.3 : -0.2;
+      vector[10 + q] = (vector[3] + skyBias * 0.4 + math.sin(q * 0.5) * 0.15).clamp(-1.0, 1.0);
+      vector[26 + q] = (blueDom * (row < 2 ? 0.85 : 0.4) + math.cos(q * 0.4) * 0.1).clamp(-1.0, 1.0);
+      vector[42 + q] = (greenDom * (row >= 2 ? 0.85 : 0.3) + math.sin(q * 0.3) * 0.1).clamp(-1.0, 1.0);
     }
 
-    // Encode lighting one-hot basis in dims 28..37
-    final lightingIndex = lighting.$1.index;
-    if (lightingIndex < 10) {
-      vector[28 + lightingIndex] = 1.0;
-    }
+    // Edge and Texture Harmonics (dims 58..63)
+    vector[58] = (vector[0] - vector[2]).abs() > 0.3 ? 0.8 : -0.2;
+    vector[59] = (vector[1] - vector[0]).abs() > 0.3 ? 0.7 : -0.2;
+    vector[60] = metrics.avgSaturation < 0.25 ? 0.75 : -0.3;
+    vector[61] = metrics.avgLuminance < 60.0 ? 0.8 : 0.0;
+    vector[62] = greenDom > 0.2 ? 0.7 : -0.2;
+    vector[63] = 0.5;
 
-    // Fill harmonic contextual basis for cosine similarity matching
-    for (int i = 38; i < 64; i++) {
-      vector[i] = math.sin((i + sceneIndex * 3 + lightingIndex * 5) * 0.45) * 0.35;
+    // L2 normalization to unit hypersphere
+    double normSq = 0.0;
+    for (int i = 0; i < 64; i++) {
+      normSq += vector[i] * vector[i];
+    }
+    final double norm = math.sqrt(normSq) + 1e-8;
+    for (int i = 0; i < 64; i++) {
+      vector[i] /= norm;
     }
 
     return vector;
@@ -401,17 +527,28 @@ class PhotoContextAnalyzer {
 
   int _inferPropIndex((SceneType, String, String) scene) {
     switch (scene.$1) {
-      case SceneType.cafeRestaurant:
-        return 1; // Coffee cup / table
       case SceneType.beach:
       case SceneType.poolsideResort:
-        return 2; // Sunglasses / summer
-      case SceneType.gymFitness:
-        return 3; // Fitness
+        return 0; // Beach & Coastal
+      case SceneType.naturePark:
+      case SceneType.gardenFloral:
+        return 1; // Mountains & Nature Hiking
+      case SceneType.rooftopSkyline:
+      case SceneType.urbanCity:
+      case SceneType.museumGallery:
+        return 2; // Urban Rooftops & Cityscape
+      case SceneType.cafeRestaurant:
+        return 3; // Cafes, Diners & Restaurants
+      case SceneType.indoorLiving:
       case SceneType.officeWorkspace:
-        return 4; // Laptop / book
+        return 4; // Home, Cozy & Balcony
+      case SceneType.gymFitness:
+        return 5; // Gym, Yoga & Fitness
+      case SceneType.festivalEvent:
+        return 6; // Festivals, Parties & Nightlife
+      case SceneType.studioMinimal:
       default:
-        return 0; // None
+        return 4; // Default to Home, Cozy & Balcony (4), NEVER Beach (0)
     }
   }
 }

@@ -28,7 +28,7 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.analysis.recommendedPoses.isNotEmpty) {
+    if (widget.analysis.peopleCount > 0 && widget.analysis.recommendedPoses.isNotEmpty) {
       _selectedPose = widget.analysis.recommendedPoses.first;
     }
   }
@@ -36,12 +36,9 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_selectedPose == null) {
-      final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
+    if (_selectedPose == null && widget.analysis.peopleCount > 0) {
       if (widget.analysis.recommendedPoses.isNotEmpty) {
         _selectedPose = widget.analysis.recommendedPoses.first;
-      } else if (poseLibrary.allPoses.isNotEmpty) {
-        _selectedPose = poseLibrary.allPoses.first;
       }
     }
   }
@@ -143,11 +140,10 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
   Widget build(BuildContext context) {
     final analysis = widget.analysis;
     final recommender = Provider.of<PoseRecommendationService>(context, listen: false);
-    final poseLibrary = Provider.of<PoseLibraryService>(context, listen: false);
 
-    final List<TargetPose> top3Photos = analysis.recommendedPoses.isNotEmpty
+    final List<TargetPose> top3Photos = analysis.peopleCount > 0
         ? analysis.recommendedPoses.take(3).toList()
-        : (poseLibrary.allPoses.isNotEmpty ? poseLibrary.allPoses.take(3).toList() : []);
+        : const [];
 
     final activePose = _selectedPose ?? (top3Photos.isNotEmpty ? top3Photos.first : null);
 
@@ -268,7 +264,7 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
               ),
             ),
 
-            // Lower Section: Top 3 Suggested Photos from 12k dataset
+            // Lower Section: Top 3 Suggested Photos or Zero-Person Notice
             Expanded(
               flex: 5,
               child: Container(
@@ -281,44 +277,92 @@ class _PhotoAnalysisScreenState extends State<PhotoAnalysisScreen> {
                   ],
                 ),
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Header
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          '3 Suggested Photos (Will Look Better)',
-                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
-                        if (analysis.predictedCategory != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: AppTheme.primaryCyan.withAlpha(40),
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: AppTheme.primaryCyan.withAlpha(120), width: 0.8),
+                child: analysis.peopleCount == 0
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withAlpha(15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.person_off_outlined, color: AppTheme.textSecondary, size: 40),
                             ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.memory, color: AppTheme.primaryCyan, size: 11),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'ML: ${analysis.predictedCategory} (${((analysis.categoryProbability ?? 0.85) * 100).toInt()}%)',
-                                  style: const TextStyle(color: AppTheme.primaryCyan, fontSize: 10, fontWeight: FontWeight.bold),
+                            const SizedBox(height: 14),
+                            const Text(
+                              'No Person Detected in Photo',
+                              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 8),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 24),
+                              child: Text(
+                                'The on-device ML model requires at least 1 person in the photo to suggest flattering poses.\nFrame yourself or your group and tap Retake.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.4),
+                              ),
+                            ),
+                            const SizedBox(height: 22),
+                            SizedBox(
+                              width: 170,
+                              height: 44,
+                              child: ElevatedButton.icon(
+                                onPressed: () => Navigator.of(context).pop(false),
+                                icon: const Icon(Icons.refresh_rounded, color: Colors.black, size: 18),
+                                label: const Text(
+                                  'Retake Photo',
+                                  style: TextStyle(color: Colors.black, fontSize: 13, fontWeight: FontWeight.bold),
                                 ),
-                              ],
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.primaryCyan,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                  elevation: 4,
+                                ),
+                              ),
                             ),
-                          )
-                        else
-                          const Text(
-                            '12,000 Dataset Matches',
-                            style: TextStyle(color: AppTheme.primaryCyan, fontSize: 11, fontWeight: FontWeight.bold),
+                          ],
+                        ),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Header
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                '${analysis.peopleCount == 1 ? "Solo" : (analysis.peopleCount == 2 ? "Duo" : (analysis.peopleCount == 3 ? "Trio" : "${analysis.peopleCount}-Person Group"))} Suggestions (${top3Photos.length} Photos)',
+                                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                              ),
+                              if (analysis.predictedCategory != null)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.primaryCyan.withAlpha(40),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: AppTheme.primaryCyan.withAlpha(120), width: 0.8),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.memory, color: AppTheme.primaryCyan, size: 11),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'ML: ${analysis.predictedCategory} (${((analysis.categoryProbability ?? 0.85) * 100).toInt()}%)',
+                                        style: const TextStyle(color: AppTheme.primaryCyan, fontSize: 10, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              else
+                                const Text(
+                                  '12,000 Dataset Matches',
+                                  style: TextStyle(color: AppTheme.primaryCyan, fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                            ],
                           ),
-                      ],
-                    ),
 
                     const SizedBox(height: 8),
 

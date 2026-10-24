@@ -83,9 +83,6 @@ class PoseLibraryService extends ChangeNotifier {
       final List<dynamic> jsonList = jsonDecode(jsonString) as List<dynamic>;
       _allPoses = jsonList.map((j) => TargetPose.fromJson(j as Map<String, dynamic>)).toList();
       _isLoading = false;
-      if (_activeTargetPose == null && !_userExplicitlyCleared && _allPoses.isNotEmpty) {
-        _activeTargetPose = _allPoses.first;
-      }
       notifyListeners();
     } catch (e) {
       debugPrint('Error loading pose library: $e');

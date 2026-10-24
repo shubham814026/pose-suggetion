@@ -59,6 +59,7 @@ class PoseRecommendationService {
   bool get isInitialized => _isInitialized;
   Map<String, List<double>> get embeddings => _embeddings;
   bool get hasNeuralRecommenderWeights => _w1 != null;
+  Map<String, dynamic>? get recommenderWeights => _recommenderWeights;
 
   /// Asynchronously loads embedding feature vectors and deep neural weights from asset bundle.
   Future<void> initialize() async {
@@ -111,41 +112,78 @@ class PoseRecommendationService {
     _isInitialized = true;
   }
 
-  /// Builds the 80-d context conditioning tensor for ContextPoseNet.
+  /// Builds the 80-d context conditioning tensor for ContextPoseNet and ContextPoseRecommenderNet.
+  /// [0..63]: 64-d Visual Scene & Background Embedding
+  /// [64..79]: 16-d Pose Geometry, People Count, Lens & Stance Features
   List<double> buildContextVector({
     required List<double> sceneVector,
     int propIndex = 0,
     int peopleCount = 1,
     bool isFrontCamera = true,
+    bool isSelfieComposition = false,
+    double shoulderWidthNorm = 0.16,
+    double torsoHeightNorm = 0.40,
+    bool isSitting = false,
+    bool isStanding = true,
+    bool isLegsVisible = true,
+    double kneeAngleNorm = 0.95,
+    double hipAngleNorm = 0.95,
+    double interPersonProximity = 0.0,
   }) {
     final List<double> context = List.filled(80, 0.0);
 
-    // 1. [0..63] Scene Embedding Vector
+    // 1. [0..63] Visual Scene Embedding Vector
     for (int i = 0; i < min(64, sceneVector.length); i++) {
       context[i] = sceneVector[i];
     }
 
-    // 2. [64..73] Prop / Environment Theme (One-hot 10-d)
-    final int clampedProp = propIndex.clamp(0, 9);
-    context[64 + clampedProp] = 1.0;
+    // 2. [64..79] 16-d Pose Geometry, People Count, Lens & Stance Features
+    // 64: people_count_norm (count / 10.0)
+    context[64] = (peopleCount / 10.0).clamp(0.0, 1.0);
 
-    // 3. [74..77] People Count & Grouping (One-hot 4-d)
-    if (peopleCount <= 1) {
-      context[74] = 1.0; // Solo
+    // 65..69: Mutually exclusive people grouping indicators
+    if (peopleCount == 1) {
+      context[65] = 1.0; // is_solo
     } else if (peopleCount == 2) {
-      context[75] = 1.0; // Duo / Couple
+      context[66] = 1.0; // is_duo
     } else if (peopleCount == 3) {
-      context[76] = 1.0; // Trio
-    } else {
-      context[77] = 1.0; // Group (4+)
+      context[67] = 1.0; // is_trio
+    } else if (peopleCount >= 4 && peopleCount <= 6) {
+      context[68] = 1.0; // is_group_small
+    } else if (peopleCount >= 7) {
+      context[69] = 1.0; // is_group_large
     }
 
-    // 4. [78..79] Camera Lens Mode (One-hot 2-d)
-    if (isFrontCamera) {
-      context[79] = 1.0; // Front Selfie
-    } else {
-      context[78] = 1.0; // Rear Portrait
-    }
+    // 70: is_front_camera
+    context[70] = isFrontCamera ? 1.0 : 0.0;
+
+    // 71: is_selfie_composition (front camera close-up or large face/bust framing)
+    final bool effectiveSelfie = isSelfieComposition || (isFrontCamera && peopleCount == 1);
+    context[71] = effectiveSelfie ? 1.0 : 0.0;
+
+    // 72: shoulder_width_norm (width relative to viewfinder)
+    context[72] = shoulderWidthNorm.clamp(0.0, 1.0);
+
+    // 73: torso_height_norm (torso height relative to viewfinder)
+    context[73] = torsoHeightNorm.clamp(0.0, 1.0);
+
+    // 74: is_sitting
+    context[74] = isSitting ? 1.0 : 0.0;
+
+    // 75: is_standing
+    context[75] = isStanding ? 1.0 : 0.0;
+
+    // 76: is_legs_visible
+    context[76] = isLegsVisible ? 1.0 : 0.0;
+
+    // 77: knee_angle_norm (angle / 180.0)
+    context[77] = kneeAngleNorm.clamp(0.0, 1.0);
+
+    // 78: hip_angle_norm (angle / 180.0)
+    context[78] = hipAngleNorm.clamp(0.0, 1.0);
+
+    // 79: inter_person_proximity
+    context[79] = interPersonProximity.clamp(0.0, 1.0);
 
     return context;
   }
@@ -597,6 +635,45 @@ class PoseRecommendationService {
     );
   }
 
+  /// Strictly filters candidate library poses by people count into mutually exclusive group tiers.
+  List<TargetPose> filterPosesByPeopleCount(List<TargetPose> candidatePoses, int peopleCount) {
+    if (peopleCount == 0) return const [];
+
+    return candidatePoses.where((pose) {
+      final cat = pose.category.toLowerCase();
+      final name = pose.name.toLowerCase();
+
+      if (peopleCount == 1) {
+        return !cat.contains('couple') &&
+            !cat.contains('duo') &&
+            !cat.contains('trio') &&
+            !cat.contains('group') &&
+            !cat.contains('family');
+      } else if (peopleCount == 2) {
+        return cat.contains('couple') ||
+            cat.contains('duo') ||
+            cat.contains('best friends') ||
+            name.contains('couple') ||
+            name.contains('duo');
+      } else if (peopleCount == 3) {
+        return cat.contains('trio') ||
+            name.contains('trio') ||
+            name.contains('3');
+      } else if (peopleCount >= 4 && peopleCount <= 6) {
+        return cat.contains('small groups') ||
+            cat.contains('group of people') ||
+            name.contains('group');
+      } else {
+        // 7+ People
+        return cat.contains('large groups') ||
+            cat.contains('family') ||
+            cat.contains('group of people') ||
+            name.contains('large group') ||
+            name.contains('family');
+      }
+    }).toList();
+  }
+
   /// Executes full on-device forward pass of ContextPoseRecommenderNet (< 4ms)
   /// using the trained 100-epoch neural network weights.
   NeuralRecommendationResult runNeuralRecommendationInference({
@@ -607,6 +684,18 @@ class PoseRecommendationService {
     int topK = 3,
   }) {
     final int t0 = DateTime.now().millisecondsSinceEpoch;
+
+    // Strict Zero-Person Gate: If 0 people are detected, DO NOT recommend poses
+    if (peopleCount == 0) {
+      return const NeuralRecommendationResult(
+        recommendedPoses: [],
+        predictedCategory: 'No Person Detected',
+        categoryProbability: 0.0,
+        confidenceScore: 0.0,
+        inferenceTimeMs: 1,
+        predictedEmbedding: [],
+      );
+    }
 
     // Fallback if neural recommender weights are not loaded (e.g. unit tests without asset bundles)
     if (_w1 == null ||
@@ -629,7 +718,11 @@ class PoseRecommendationService {
       );
       return NeuralRecommendationResult(
         recommendedPoses: fallbackRanked,
-        predictedCategory: 'Standing & Streetwear',
+        predictedCategory: peopleCount == 1
+            ? 'Standing & Streetwear'
+            : (peopleCount == 2
+                ? 'Couple & Duo Poses'
+                : (peopleCount == 3 ? 'Trio (3 People) Poses' : 'Group of People Poses')),
         categoryProbability: 0.85,
         confidenceScore: 0.88,
         inferenceTimeMs: 1,
@@ -718,62 +811,45 @@ class PoseRecommendationService {
     }
     final double confidenceScore = _sigmoid(confLogit);
 
-    // Filter candidate poses by people count
-    List<TargetPose> filtered = candidatePoses.where((pose) {
-      final cat = pose.category.toLowerCase();
-      final name = pose.name.toLowerCase();
-
-      if (peopleCount <= 1) {
-        return !cat.contains('couple') &&
-            !cat.contains('duo') &&
-            !cat.contains('trio') &&
-            !cat.contains('group') &&
-            !cat.contains('family');
-      } else if (peopleCount == 2) {
-        return cat.contains('couple') || cat.contains('duo') || name.contains('couple');
-      } else {
-        return cat.contains('group') || cat.contains('family') || name.contains('group') || cat.contains('trio');
-      }
-    }).toList();
-
+    // Filter candidate poses strictly by people count
+    List<TargetPose> filtered = filterPosesByPeopleCount(candidatePoses, peopleCount);
     if (filtered.isEmpty) {
       filtered = List.from(candidatePoses);
     }
 
-    // Rank candidate poses:
-    // 0.50 * Neural Cosine Similarity + 0.35 * Neural Category Probability + 0.15 * Stance Harmony
+    // Rank candidate poses strictly by continuous deep neural cosine similarity!
+    // Zero hardcoded category string checks — the deep model's learned metric space drives ranking.
     final scored = filtered.map((pose) {
-      double score = 0.0;
-
+      double cosSim = 0.0;
       if (pose.embedding.length >= 64) {
-        final double cosSim = computeCosineSimilarity(predictedEmbedding, pose.embedding);
-        score += max(0.0, cosSim) * 0.50;
-      } else {
-        score += 0.30;
+        cosSim = computeCosineSimilarity(predictedEmbedding, pose.embedding);
       }
-
-      final int catIdx = categories.indexOf(pose.category);
-      if (catIdx >= 0) {
-        score += catProbs[catIdx] * 0.35;
-      }
-
-      final poseCatLower = pose.category.toLowerCase();
-      final poseNameLower = pose.name.toLowerCase();
-      if (detectedStance == StanceType.sitting) {
-        if (poseCatLower.contains('sitting') || poseNameLower.contains('seat') || poseNameLower.contains('bench')) {
-          score += 0.15;
-        }
-      } else if (detectedStance == StanceType.standing) {
-        if (poseCatLower.contains('standing') || poseCatLower.contains('streetwear') || poseNameLower.contains('stand')) {
-          score += 0.15;
-        }
-      }
-
-      return MapEntry(pose, score);
+      return MapEntry(pose, cosSim);
     }).toList();
 
     scored.sort((a, b) => b.value.compareTo(a.value));
-    final topPoses = scored.take(topK).map((e) => e.key).toList();
+
+    // Deduplicate top-K recommendations by pose title to guarantee visual and stylistic variety
+    final List<TargetPose> topPoses = [];
+    final Set<String> seenTitles = {};
+    for (final entry in scored) {
+      final titleKey = entry.key.name.toLowerCase().trim();
+      if (!seenTitles.contains(titleKey)) {
+        seenTitles.add(titleKey);
+        topPoses.add(entry.key);
+        if (topPoses.length >= topK) break;
+      }
+    }
+    // Fill remaining if needed
+    if (topPoses.length < topK) {
+      for (final entry in scored) {
+        if (!topPoses.contains(entry.key)) {
+          topPoses.add(entry.key);
+          if (topPoses.length >= topK) break;
+        }
+      }
+    }
+
     final int inferenceTimeMs = DateTime.now().millisecondsSinceEpoch - t0;
 
     return NeuralRecommendationResult(
@@ -793,23 +869,9 @@ class PoseRecommendationService {
     required StanceType detectedStance,
     required int topK,
   }) {
-    List<TargetPose> filtered = candidatePoses.where((pose) {
-      final cat = pose.category.toLowerCase();
-      final name = pose.name.toLowerCase();
+    if (peopleCount == 0) return [];
 
-      if (peopleCount <= 1) {
-        return !cat.contains('couple') &&
-            !cat.contains('duo') &&
-            !cat.contains('trio') &&
-            !cat.contains('group') &&
-            !cat.contains('family');
-      } else if (peopleCount == 2) {
-        return cat.contains('couple') || cat.contains('duo') || name.contains('couple');
-      } else {
-        return cat.contains('group') || cat.contains('family') || name.contains('group') || cat.contains('trio');
-      }
-    }).toList();
-
+    List<TargetPose> filtered = filterPosesByPeopleCount(candidatePoses, peopleCount);
     if (filtered.isEmpty) {
       filtered = List.from(candidatePoses);
     }
@@ -820,7 +882,26 @@ class PoseRecommendationService {
     }).toList();
 
     scored.sort((a, b) => b.value.compareTo(a.value));
-    return scored.take(topK).map((e) => e.key).toList();
+
+    final List<TargetPose> topPoses = [];
+    final Set<String> seenTitles = {};
+    for (final entry in scored) {
+      final titleKey = entry.key.name.toLowerCase().trim();
+      if (!seenTitles.contains(titleKey)) {
+        seenTitles.add(titleKey);
+        topPoses.add(entry.key);
+        if (topPoses.length >= topK) break;
+      }
+    }
+    if (topPoses.length < topK) {
+      for (final entry in scored) {
+        if (!topPoses.contains(entry.key)) {
+          topPoses.add(entry.key);
+          if (topPoses.length >= topK) break;
+        }
+      }
+    }
+    return topPoses;
   }
 
   /// Ranks top-K dynamic recommendations from candidate poses using on-device neural network.
